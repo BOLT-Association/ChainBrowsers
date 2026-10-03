@@ -2,7 +2,8 @@
 
 ## Phase 0 – Chain stack (done, lives in spv-testnet)
 - [x] Teranode regtest + merkle-service + Arcade, one-command boot, tx round trip and forced reorg tested (see spv-testnet README for known issues)
-- [ ] Fix or work around: second reorg on one chain stalls `generate`; 401s from Teranode's asset server to Arcade
+- [x] Repeated forced reorgs on one chain work (`rpc_timeout` and `generateTipWaitTimeout` raised in `settings.conf`); the Teranode asset-server 401s to Arcade are harmless (Arcade's health probe)
+- Arcade differs from public ARC: `POST /tx` / `GET /tx/{txid}` have no `/v1` prefix (only `/v1/policy` is aliased), new submissions return `202`, and there is no API key
 
 ## Phase 1 – Browser SPV checks (the browsers own SPV; we verify it)
 - [ ] Browser syncs headers from Arcade chaintracks (`:8083`) / Teranode asset server, accepting regtest PoW rules
@@ -16,6 +17,8 @@
 
 ## Phase 3 – Browsers
 - [ ] Hodos Browser (desktop, Rust wallet) first, then BSV Browser (mobile, Expo); see `browsers/README.md`
+  - [ ] Hodos: Arcade provider replaces ARC GorillaPool/TAAL for broadcast, tx status and proofs (`HODOS_ARCADE_URL`)
+  - [ ] Hodos: chaintracks header provider and a local UTXO source (raw-tx, outspend, UTXO and header chains still use mainnet providers)
 - [ ] Injected provider API for pages to request BOLT operations
 
 ## Phase 4 – Scenarios

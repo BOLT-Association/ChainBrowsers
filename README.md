@@ -31,7 +31,7 @@ Test environment for integrating **BOLT** (Bitcoin Original Layer-1 Token) proto
 
 ## Status
 
-The chain stack and its tests live in the private repo [BOLT-Association/spv-testnet](https://github.com/BOLT-Association/spv-testnet) (Teranode + merkle-service + Arcade, tx round trip and reorg tests passing on a fresh chain). Everything here is still scaffold. Next steps are in [docs/roadmap.md](docs/roadmap.md).
+The chain stack and its tests live in the private repo [BOLT-Association/spv-testnet](https://github.com/BOLT-Association/spv-testnet) (Teranode + merkle-service + Arcade, tx round trip and reorg tests passing on a fresh chain). Start it with `cd stack; .\stack.ps1 up` in that repo (Arcade on `:8080`, chaintracks on `:8083`). Here, the BOLT layer and scenarios are still scaffold; browser work has started with the Hodos Arcade provider (`browsers/README.md`). Next steps are in [docs/roadmap.md](docs/roadmap.md).
 
 ## References
 
