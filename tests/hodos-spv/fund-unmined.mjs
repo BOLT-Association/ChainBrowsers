@@ -11,6 +11,8 @@
 //     against the wallet's own header chain, stores it and PROMOTES the output
 //   - the same spend then succeeds
 //
+// Start the wallet with HODOS_ZERO_CONF=off: this script times the PROOF path, and with zero-conf on
+// the output is spendable before any proof (see zero-conf.mjs).
 // The stack's block generator would mine tx B within seconds, so stop it first and restart it after:
 //   docker stop cb-block-generator
 //   node fund-unmined.mjs

@@ -7,6 +7,8 @@
 //   3. SSE up but silent   expect: polling delivers it (keepalives only, no events)
 //   4. SSE killed, then restored after the block: reconnect/replay and/or polling delivers it
 //
+// Start the wallet with HODOS_ZERO_CONF=off (this measures the proof path; with zero-conf on the
+// output is spendable before any proof).
 // Setup (see ../../docs/hodos-spv.md):
 //   node proxy.mjs &                         (fault-injecting proxy: API :8090, control :8091)
 //   wallet started with HODOS_ARCADE_URL=http://localhost:8090 HODOS_ARCADE_SSE_URL=http://localhost:8090

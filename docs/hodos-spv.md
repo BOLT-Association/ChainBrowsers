@@ -42,6 +42,24 @@ docker start cb-block-generator
 
 The harness uses Teranode RPC only to mine and to pick a coinbase; the wallet never does.
 
+## Zero-conf: spending a received output before it is mined
+
+A received output whose tx is not mined yet is spendable once the network has seen it, as BSV wallets conventionally allow. It is on by default in spv mode; `HODOS_ZERO_CONF=off` restores "wait for a verified proof". It has no effect in public mode.
+
+An output becomes spendable at internalize time when (1) the BEEF's ancestry is complete and every BUMP verified against the wallet's own header chain (already required), and (2) every tx in the BEEF that has no BUMP of its own is `SEEN_ON_NETWORK`, `SEEN_ON_MULTIPLE_NODES` (or mined) on Arcade, with no double-spend or rejection. The wallet waits up to 4 s for Arcade to get there (it usually takes well under a second). "Spendable" means the output is linked to its incoming transaction row, which is the same thing that makes the wallet's own unproven change spendable; no schema change. When the proof later arrives, the usual promotion marks it confirmed.
+
+If Arcade later reports `DOUBLE_SPEND_ATTEMPTED` for that tx, the proof task unlinks the output (it stops being selectable); a rejection fails the tx, which deletes its outputs.
+
+Limits to know: a tx stuck at `ACCEPTED_BY_NETWORK` (observed for a child of an unmined parent) is not "seen", so receiving such a chain waits for a block; there is no amount cap; the withdrawal on a double-spend is covered by unit tests, not live, because Arcade's first-seen rule rejects a conflicting tx and never flags the first one on a single-node regtest.
+
+```bash
+docker stop cb-block-generator
+node zero-conf.mjs        # Z1: spend before any block, both txs proven after one block; Z2: real double-spend attempt
+docker start cb-block-generator
+```
+
+`fund-unmined.mjs` and `push-fallback.mjs` measure the proof path, so start the wallet with `HODOS_ZERO_CONF=off` for them (otherwise the output is spendable before the proof and they cannot time it).
+
 ## Push (Arcade SSE) and the polling fallback
 
 Proofs normally arrive by polling (`TaskCheckForProofs`, every 60 s). With push on, Arcade's Server-Sent Events stream wakes that same task the moment a tx is mined, so a proof is verified, stored and the output promoted within seconds instead of up to about 90 s. Push never replaces polling and never stores anything itself: an event only triggers an immediate header sync and proof check (retried every 2 s while the header chain catches up to the block). Polling keeps its normal cadence, because a tx that is not registered under the wallet's token produces no events, Arcade's replay after a reconnect is best-effort, and a stream can be up but silent.
@@ -77,7 +95,7 @@ node push-fallback.mjs
 | Area | spv mode |
 |---|---|
 | Raw tx / outspend / UTXO-by-address | No source. Errors, never "not found" or an empty list. Data arrives in BEEFs; every tx in an internalized BEEF is cached in `parent_transactions` so its outputs can be spent later. |
-| Internalized output | Marked confirmed at once if the BEEF carried a BUMP for that tx. If the subject was unmined it stays unconfirmed (not selectable) until `TaskCheckForProofs` stores a verified proof, which promotes it. |
+| Internalized output | Marked confirmed at once if the BEEF carried a BUMP for that tx. If the subject is unmined, the output is spendable at once (zero-conf, below) when Arcade has seen the tx; otherwise it stays unconfirmed until `TaskCheckForProofs` stores a verified proof, which promotes it. |
 | Proof storage / "completed" | A MINED tx is marked confirmed only once a proof that verified against the wallet's header chain is stored. Until the header chain has the block (sync every 30 s, proof task every 60 s) it stays pending and retries. |
 | Broadcast | BEEF is converted to Extended Format for Arcade (it rejects BEEF); a BEEF with a missing parent is an error. |
 | `getHeight` / `getHeaderForHeight` | From the verified header chain only; 503/404 until synced. |
@@ -87,7 +105,7 @@ node push-fallback.mjs
 
 ## Known gaps
 
-- An internalized output whose tx never gets mined stays unconfirmed forever (safe, but never cleaned up; the phantom-output sweep needs a public lookup).
+- An internalized output whose tx never gets mined stays unconfirmed forever (safe, but never cleaned up; the phantom-output sweep needs a public lookup). With zero-conf, such an output that was linked stays selectable until Arcade reports the tx rejected or double-spent.
 - Polling is not slowed down when push is healthy (a tx with no push registration would then wait longer). It could be, behind a setting, if Arcade load ever matters.
 - Push has no browser-settings toggle yet (env only), because spv mode itself is env-only.
 - `internalizeAction` does not invalidate the wallet's balance cache in public mode (spv mode does, after confirming).
