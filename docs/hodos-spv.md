@@ -42,6 +42,36 @@ docker start cb-block-generator
 
 The harness uses Teranode RPC only to mine and to pick a coinbase; the wallet never does.
 
+## Push (Arcade SSE) and the polling fallback
+
+Proofs normally arrive by polling (`TaskCheckForProofs`, every 60 s). With push on, Arcade's Server-Sent Events stream wakes that same task the moment a tx is mined, so a proof is verified, stored and the output promoted within seconds instead of up to about 90 s. Push never replaces polling and never stores anything itself: an event only triggers an immediate header sync and proof check (retried every 2 s while the header chain catches up to the block). Polling keeps its normal cadence, because a tx that is not registered under the wallet's token produces no events, Arcade's replay after a reconnect is best-effort, and a stream can be up but silent.
+
+| Setting | Meaning |
+|---|---|
+| `HODOS_ARCADE_SSE_URL` | Arcade's SSE service (a separate listener, default port 8082; the stack publishes it as `ARCADE_SSE_PORT`). Push is on only when this is set (spv mode). |
+| `HODOS_ARCADE_PUSH=off` | Switch push off even if the URL is set. Polling cannot be switched off. |
+
+The callback token is `HMAC-SHA256(master private key, "hodos-arcade-callback-token-v1")`: stable across restarts, per wallet, not derivable from the public identity key. Every broadcast through Arcade carries it as `X-CallbackToken`; an internalized tx that is on the network but unproven is re-submitted once (Extended Format, idempotent) to subscribe it.
+
+Measured on the local stack (time from the block being mined to the output being spendable; the proof task polls every 60 s):
+
+| Stream condition | Time | Delivered by |
+|---|---|---|
+| Working | 0.7 s | push (MINED event woke the proof check) |
+| Refused (503) | 59.1 s | polling |
+| Up but silent (keepalives only) | 62.5 s | polling |
+| Dropped across the block, restored 4 s later | 8.7 s | reconnect + `Last-Event-ID` replay |
+
+Fallback scenarios (`tests/hodos-spv/push-fallback.mjs`) run the unmined-subject flow with the stream working, refused, up-but-silent, and dropped across the block, and time how long after mining the output becomes spendable:
+
+```bash
+cd tests/hodos-spv
+node proxy.mjs &                 # fault-injecting proxy: API + SSE on :8090, control on :8091
+docker stop cb-block-generator
+# start the wallet with HODOS_ARCADE_URL=http://localhost:8090 and HODOS_ARCADE_SSE_URL=http://localhost:8090
+node push-fallback.mjs
+```
+
 ## Things that behave differently from public mode
 
 | Area | spv mode |
@@ -58,7 +88,8 @@ The harness uses Teranode RPC only to mine and to pick a coinbase; the wallet ne
 ## Known gaps
 
 - An internalized output whose tx never gets mined stays unconfirmed forever (safe, but never cleaned up; the phantom-output sweep needs a public lookup).
-- The proof arrives by polling (up to about 90 s after mining). Arcade's SSE stream (`/events?callbackToken=…`) could wake the proof task sooner; not built.
+- Polling is not slowed down when push is healthy (a tx with no push registration would then wait longer). It could be, behind a setting, if Arcade load ever matters.
+- Push has no browser-settings toggle yet (env only), because spv mode itself is env-only.
 - `internalizeAction` does not invalidate the wallet's balance cache in public mode (spv mode does, after confirming).
 - Arcade reports a 0 sat/KB policy, which Hodos's fee sanity range rejects, so it falls back to its default rate.
 - In public mode a proof that fails verification still marks the tx confirmed (existing behaviour, left alone).

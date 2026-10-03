@@ -53,27 +53,31 @@ export async function spendCoinbase (outputs) {
   const tip = (await rpc('getinfo')).blocks
   const total = outputs.reduce((a, o) => a + o.satoshis, 0)
   for (let k = 0; k < 40; k++) {
-    const height = tip - 100 - Math.floor(Math.random() * 60)
-    const block = await rpc('getblock', [await rpc('getblockhash', [height]), 1])
-    const cbHex = await rpc('getrawtransaction', [block.tx?.[0] ?? block.merkleroot, 0])
-    const source = Transaction.fromHex(cbHex)
-    const vout = source.outputs.findIndex(o => o.lockingScript.toHex() === minerScript.toHex())
-    if (vout < 0) continue
-    const tx = new Transaction()
-    tx.addInput({ sourceTransaction: source, sourceOutputIndex: vout, unlockingScriptTemplate: new P2PKH().unlock(minerKey) })
-    for (const o of outputs) tx.addOutput(o)
-    tx.addOutput({ lockingScript: minerScript, satoshis: source.outputs[vout].satoshis - total })
-    await tx.sign()
-    if (await submit(tx)) {
-      // Accepted for processing is not accepted: a coinbase that an earlier run already spent
-      // is rejected a moment later. Wait for the network to take it, else try another.
-      const verdict = await until('network verdict', async () => {
-        const st = (await arcadeStatus(tx.id('hex'))).txStatus
-        return ['SEEN_ON_NETWORK', 'SEEN_ON_MULTIPLE_NODES', 'MINED', 'REJECTED', 'DOUBLE_SPEND_ATTEMPTED'].includes(st) ? st : null
-      }, { timeout: 20000, every: 500 }).catch(() => 'UNKNOWN')
-      if (!['REJECTED', 'DOUBLE_SPEND_ATTEMPTED', 'UNKNOWN'].includes(verdict)) return tx
+    try {
+      const height = tip - 100 - Math.floor(Math.random() * 60)
+      const block = await rpc('getblock', [await rpc('getblockhash', [height]), 1])
+      const cbHex = await rpc('getrawtransaction', [block.tx?.[0] ?? block.merkleroot, 0])
+      const source = Transaction.fromHex(cbHex)
+      const vout = source.outputs.findIndex(o => o.lockingScript.toHex() === minerScript.toHex())
+      if (vout < 0) continue
+      const tx = new Transaction()
+      tx.addInput({ sourceTransaction: source, sourceOutputIndex: vout, unlockingScriptTemplate: new P2PKH().unlock(minerKey) })
+      for (const o of outputs) tx.addOutput(o)
+      tx.addOutput({ lockingScript: minerScript, satoshis: source.outputs[vout].satoshis - total })
+      await tx.sign()
+      if (await submit(tx)) {
+        // Accepted for processing is not accepted: a coinbase that an earlier run already spent
+        // is rejected a moment later. Wait for the network to take it, else try another.
+        const verdict = await until('network verdict', async () => {
+          const st = (await arcadeStatus(tx.id('hex'))).txStatus
+          return ['SEEN_ON_NETWORK', 'SEEN_ON_MULTIPLE_NODES', 'MINED', 'REJECTED', 'DOUBLE_SPEND_ATTEMPTED'].includes(st) ? st : null
+        }, { timeout: 20000, every: 500 }).catch(() => 'UNKNOWN')
+        if (!['REJECTED', 'DOUBLE_SPEND_ATTEMPTED', 'UNKNOWN'].includes(verdict)) return tx
+      }
+      console.log(`  coinbase at ${height} not usable; trying another`)
+    } catch (e) {
+      console.log(`  candidate coinbase failed (${String(e.message).slice(0, 80)}); trying another`)
     }
-    console.log(`  coinbase at ${height} not usable; trying another`)
   }
   throw new Error('no usable coinbase')
 }
@@ -114,3 +118,57 @@ export async function waitForWalletHeader (height, timeout = 120000) {
 }
 
 export const balance = async () => (await (await fetch(WALLET + '/wallet/balance')).json()).balance
+
+/** Mine one block that includes `txid`; returns the time just after the block was mined. */
+export async function mineBlockWith (txid) {
+  for (let i = 0; i < 6; i++) {
+    await rpc('generate', [1]).catch(() => {})
+    const t0 = Date.now()
+    const mined = await until('Arcade sees it mined', async () => (await arcadeStatus(txid)).txStatus === 'MINED', { timeout: 15000, every: 500 }).catch(() => false)
+    if (mined) return t0
+  }
+  throw new Error('tx never mined')
+}
+
+/** The unmined-subject scenario, timed. Funds the wallet via a BEEF whose subject tx B is not
+ *  mined, checks the output is not spendable, mines B, then polls a spend until it succeeds.
+ *  Returns how long (ms) after the block was mined the output became spendable.
+ *  Needs the stack's block generator stopped (`docker stop cb-block-generator`). */
+export async function unminedFlow ({ fund, spend, pollMs = 2000, timeoutMs = 300000, beforeMine = async () => {} }) {
+  const pay = await paymentOutputFor(fund)
+  const A = await spendCoinbase([{ lockingScript: minerScript, satoshis: fund + 50_000 }])
+  const aStatus = await mineUntilMined(A.id('hex'))
+  A.merklePath = MerklePath.fromHex(aStatus.merklePath)
+
+  const B = new Transaction()
+  B.addInput({ sourceTransaction: A, sourceOutputIndex: 0, unlockingScriptTemplate: new P2PKH().unlock(minerKey) })
+  B.addOutput(pay.output)
+  B.addOutput({ lockingScript: minerScript, satoshis: 50_000 })
+  await B.sign()
+  const bTxid = B.id('hex')
+  if (!await submit(B)) throw new Error('Arcade did not accept B')
+  await until('B on network', async () => ['SEEN_ON_NETWORK', 'SEEN_ON_MULTIPLE_NODES'].includes((await arcadeStatus(bTxid)).txStatus), { timeout: 30000 })
+
+  await waitForWalletHeader(aStatus.blockHeight)
+  const r = await wallet('/internalizeAction', pay.internalizeBody(B.toAtomicBEEF()))
+  if (r.status !== 200) throw new Error('internalize failed: ' + JSON.stringify(r.json))
+  await sleep(2500) // let the wallet's subscription (re-submit with its token) reach Arcade
+
+  const trySend = async () => {
+    const res = await fetch(WALLET + '/transaction/send', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ toAddress: minerKey.toAddress(), amount: spend }) })
+    const j = await res.json().catch(() => ({}))
+    return j.success ? j : null
+  }
+  const early = await trySend()
+  if (early) throw new Error('output was spendable before its tx was mined')
+
+  await beforeMine()
+  const t0 = await mineBlockWith(bTxid)
+  const end = Date.now() + timeoutMs
+  while (Date.now() < end) {
+    const sent = await trySend()
+    if (sent) return { elapsedMs: Date.now() - t0, txid: bTxid, spendTxid: sent.txid }
+    await sleep(pollMs)
+  }
+  throw new Error('output never became spendable')
+}
