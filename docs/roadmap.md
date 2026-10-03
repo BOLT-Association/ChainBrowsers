@@ -17,8 +17,10 @@
 
 ## Phase 3 – Browsers
 - [ ] Hodos Browser (desktop, Rust wallet) first, then BSV Browser (mobile, Expo); see `browsers/README.md`
-  - [ ] Hodos: Arcade provider replaces ARC GorillaPool/TAAL for broadcast, tx status and proofs (`HODOS_ARCADE_URL`)
-  - [ ] Hodos: chaintracks header provider and a local UTXO source (raw-tx, outspend, UTXO and header chains still use mainnet providers)
+  - [x] Hodos: `HODOS_CHAIN_MODE=spv` — Arcade for broadcast/status/proofs, chaintracks for headers, wallet-verified header chain (PoW, difficulty, most-work, reorg), BEEF proof checks, reorg proof re-check, no public-indexer calls
+  - [ ] Hodos: fund a wallet in spv mode by BEEF (harness spends a coinbase through Arcade, builds BEEF + BUMP, calls `internalizeAction`)
+  - [ ] Hodos: spv mode has no per-input spent check, so double-spend suspects stay suspected; decide how BEEF/competingTxs can resolve them
+  - [ ] Hodos: mainnet header rules (checkpoint, difficulty adjustment, median-time-past)
 - [ ] Injected provider API for pages to request BOLT operations
 
 ## Phase 4 – Scenarios
