@@ -19,7 +19,8 @@
 - [ ] Hodos Browser (desktop, Rust wallet) first, then BSV Browser (mobile, Expo); see `browsers/README.md`
   - [x] Hodos: `HODOS_CHAIN_MODE=spv` — Arcade for broadcast/status/proofs, chaintracks for headers, wallet-verified header chain (PoW, difficulty, most-work, reorg), BEEF proof checks, reorg proof re-check, no public-indexer calls
   - [x] Hodos: fund a wallet in spv mode by BEEF and spend it (`tests/hodos-spv`, run guide `docs/hodos-spv.md`); verified on a real wallet process with a throwaway data dir
-  - [ ] Hodos: promote an internalized output whose BEEF subject had no BUMP when its proof arrives later (spv mode)
+  - [x] Hodos: promote an internalized output whose BEEF subject had no BUMP when its proof arrives later (spv mode; `tests/hodos-spv/fund-unmined.mjs`)
+  - [ ] Hodos: wake the proof task from Arcade's SSE stream instead of waiting for the 60 s poll (optional latency work)
   - [ ] Hodos: spv mode has no per-input spent check, so double-spend suspects stay suspected; decide how BEEF/competingTxs can resolve them
   - [ ] Hodos: mainnet header rules (checkpoint, difficulty adjustment, median-time-past)
 - [ ] Injected provider API for pages to request BOLT operations
