@@ -31,7 +31,9 @@ SPV_LIVE=1 npx jest __tests__/spv/live --runInBand  # live, against the stack ab
 
 The live tests need Docker (they stop `cb-block-generator` for the reorg test and start it again) and run serially. Do not run them while something else is using the stack's chain.
 
-Verified live: header sync from genesis equals the node's roots; a chaintracks that forges a merkle root is rejected; a real reorg is followed to the heavier branch; a BEEF for a block the wallet's own chain has not reached is refused, then accepted after the wallet's sync; a BEEF with a tampered BUMP is rejected; a spend through Arcade is broadcast and its proof is not stored before the wallet's chain holds the block, and is stored after (root equal to the node's); a lying Arcade serving a tampered BUMP gets nothing stored; the wallet contacted only the configured Arcade and chaintracks.
+Verified live (19 live tests): header sync from genesis equals the node's roots; a chaintracks that forges a merkle root is rejected; a real reorg is followed to the heavier branch; a BEEF for a block the wallet's own chain has not reached is refused, then accepted after the wallet's sync; a BEEF with a tampered BUMP is rejected; a spend through Arcade is broadcast and its proof is not stored before the wallet's chain holds the block, and is stored after (root equal to the node's); a lying Arcade serving a tampered BUMP gets nothing stored; the wallet contacted only the configured Arcade and chaintracks. Also live: an Arcade that requires the API key (two small proxies answering 401 without it): a wallet without the key cannot sync, one with it works end to end; push: the SSE task connects to Arcade's SSE port, a `MINED` event before the wallet's chain has the block stores nothing and the replayed event after its own sync stores the verified proof, polling alone works with the listener down or unset; zero-conf with the stack miner stopped: a payment Arcade has seen is accepted, spent before any block and both transactions proven once mined, while an unseen and a conflicting payment are refused.
+
+The live files are run by name when other sessions share the stack (`SPV_LIVE=1 npx jest __tests__/spv/live/headers __tests__/spv/live/wallet __tests__/spv/live/auth __tests__/spv/live/sse __tests__/spv/live/zeroconf --runInBand`): they stop and start `cb-block-generator` and the headers test rewrites the chain, and each test wallet uses a unique callback token (Arcade replays every past event for a token, so a shared one makes a wallet drain old events first).
 
 ## 3. Pointing the app at it
 
@@ -43,11 +45,13 @@ EXPO_PUBLIC_DEFAULT_CHAIN=teratest
 EXPO_PUBLIC_TERATEST_ARC_URL=http://<LAN-IP>:8080
 EXPO_PUBLIC_TERATEST_CHAINTRACKS_URL=http://<LAN-IP>:8083/chaintracks/v1
 EXPO_PUBLIC_SPV_RULES=regtest
+EXPO_PUBLIC_SPV_SSE_URL=http://<LAN-IP>:8082   # optional: Arcade's SSE port; without it, polling only
+EXPO_PUBLIC_TERATEST_ARC_API_KEY=<key>         # only if the Arcade requires one
 EXPO_PUBLIC_SPV_ANCHOR_HEIGHT=0
 EXPO_PUBLIC_SPV_ANCHOR_HASH=0f9188f13cb7b2c71f2a335e3a4fc328bf5beb436012afca590b1a11466e2206
 ```
 
-Startup (wallet build) refuses spv without both URLs, with a URL that is a public indexer, or on a chain with no difficulty rules; an unrecognised `EXPO_PUBLIC_CHAIN_MODE` means spv, never public. Untested on a device: treat the first run as a test of the app wiring, with a throwaway wallet.
+Startup (wallet build) refuses spv without both URLs, with a URL that is a public indexer or not https (plain http only to a local-development host), or on a chain with no difficulty rules; an unrecognised `EXPO_PUBLIC_CHAIN_MODE` means spv, never public. Untested on a device: treat the first run as a test of the app wiring, with a throwaway wallet.
 
 ## Audit status (SPV_HEADERS_FINDINGS.md, re-checked 2026-10-04)
 
