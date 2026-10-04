@@ -31,7 +31,7 @@ Test environment for integrating **BOLT** (Bitcoin Original Layer-1 Token) proto
 
 ## Status
 
-The chain stack and its tests live in the private repo [BOLT-Association/spv-testnet](https://github.com/BOLT-Association/spv-testnet) (Teranode + merkle-service + Arcade, tx round trip and reorg tests passing on a fresh chain). Start it with `cd stack; .\stack.ps1 up` in that repo (Arcade on `:8080`, chaintracks on `:8083`). Here, the BOLT layer and scenarios are still scaffold; browser work has started with the Hodos Arcade provider (`browsers/README.md`). Next steps are in [docs/roadmap.md](docs/roadmap.md).
+The chain stack and its tests live in the private repo [BOLT-Association/spv-testnet](https://github.com/BOLT-Association/spv-testnet) (Teranode + merkle-service + Arcade, tx round trip and reorg tests passing on a fresh chain). Start it with `cd stack; .\stack.ps1 up` in that repo (Arcade on `:8080`, chaintracks on `:8083`). Here, the BOLT layer and scenarios are still scaffold; browser work has two opt-in spv modes that use only Arcade and a header chain the browser verifies itself, both regtest-only so far: Hodos ([docs/hodos-spv.md](docs/hodos-spv.md)) and BSV Browser ([docs/bsv-browser-spv.md](docs/bsv-browser-spv.md)); see `browsers/README.md`. Next steps are in [docs/roadmap.md](docs/roadmap.md).
 
 ## References
 

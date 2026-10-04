@@ -23,6 +23,10 @@
   - [ ] Hodos: wake the proof task from Arcade's SSE stream instead of waiting for the 60 s poll (optional latency work)
   - [ ] Hodos: spv mode has no per-input spent check, so double-spend suspects stay suspected; decide how BEEF/competingTxs can resolve them
   - [ ] Hodos: mainnet header rules (checkpoint, difficulty adjustment, median-time-past)
+  - [x] bsv-browser: `EXPO_PUBLIC_CHAIN_MODE=spv` (branch `spv-hardening` of the fork, a `patch-package` patch on `@bsv/expo-wallet-toolbox`) — Arcade only, wallet-verified header chain (regtest rules, most-work reorg), strict chain tracker, proofs stored only after the wallet's own chain verifies them, public indexers refused; unit tests with negative controls and live headless-wallet tests (`docs/bsv-browser-spv.md`)
+  - [ ] bsv-browser: run the app (not just the headless wallet) in spv mode on a device or emulator
+  - [ ] bsv-browser: mainnet / testnet header rules (checkpoint, difficulty adjustment, median-time-past), Arcade authentication, SSE push, zero-conf
+  - [ ] bsv-browser: public mode still trusts the remote for page-facing header calls (opt-in switch by design); decide whether to harden it or send the changes upstream
 - [ ] Injected provider API for pages to request BOLT operations
 
 ## Phase 4 – Scenarios
