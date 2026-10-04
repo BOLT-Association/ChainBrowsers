@@ -42,6 +42,8 @@ docker start cb-block-generator
 
 The harness uses Teranode RPC only to mine and to pick a coinbase; the wallet never does.
 
+Start each of `fund-unmined`, `zero-conf` and `push-fallback` on a **fresh** wallet (new empty `HODOS_DATA_DIR`): they assert that an output is *not* spendable while its tx is unmined, which a wallet still holding change from an earlier run defeats (`fund-unmined` then fails with "output is not spendable" because the spend is funded by the old change).
+
 ## Zero-conf: spending a received output before it is mined
 
 A received output whose tx is not mined yet is spendable once the network has seen it, as BSV wallets conventionally allow. It is on by default in spv mode; `HODOS_ZERO_CONF=off` restores "wait for a verified proof". It has no effect in public mode.
