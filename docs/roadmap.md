@@ -27,7 +27,7 @@
   - [ ] bsv-browser: run the app (not just the headless wallet) in spv mode on a device or emulator
   - [x] bsv-browser: https-only Arcade/chaintracks/SSE URLs, Arcade API key (Bearer, every Arcade client), SSE push (`EXPO_PUBLIC_SPV_SSE_URL`), zero-conf (an unmined payment is accepted only once Arcade has seen it); all tested live on regtest
   - [ ] bsv-browser: mainnet / testnet header rules (checkpoint, difficulty adjustment, median-time-past)
-  - [ ] bsv-browser: the toolbox's SSE client does not reconnect by itself (the app calls `fetchSSEEvents()`), so there is no immediate push after a dropped stream
+  - [ ] bsv-browser: the toolbox's SSE client does not reconnect by itself (the app calls `fetchSSEEvents()`), so there is no immediate push after a dropped stream (decided 2026-10-04: not worth fixing yet, push is a latency gain behind working polling; if the emulator run shows stalls after backgrounding, add a foreground timer calling `monitor.fetchSSEEvents()` about every 30 s, with a unit test and a live test that kills the stream)
   - [ ] bsv-browser: public mode still trusts the remote for page-facing header calls (opt-in switch by design); decide whether to harden it or send the changes upstream
 - [ ] Injected provider API for pages to request BOLT operations
 
