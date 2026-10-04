@@ -24,10 +24,11 @@ Test environment for BOLT / SPV work in Bitcoin-enabled browsers against a local
 - **Arcade embeds go-chaintracks** (stores and serves headers, bulk `/headers`); no separate block-headers-service or chaintracks service is needed.
 - **Arcade SSE** is a separate listener (default `:8082`, published by spv-testnet as `ARCADE_SSE_PORT`): frames `id:` / `event: status` / `data: {txid, txStatus, ...}`, `: keepalive` every 15 s, MINED frame carries `merklePath`, `Last-Event-ID` replay is best-effort. Only txs submitted with the same `X-CallbackToken` produce events.
 - **First-seen:** a conflicting tx is `REJECTED` and the first stays `SEEN_ON_NETWORK`; Arcade never flags the first as a double-spend on a single node. A child of an unmined parent stays `ACCEPTED_BY_NETWORK` until a block.
+- **After a machine restart the stack is down** (Docker Desktop is not running and some containers come back half-started): start Docker Desktop, then `stack.ps1 up -NoMine` in the spv-testnet repo (add the miner back with `docker start cb-block-generator`).
 - **The stack's `cb-block-generator` mines every few seconds.** Scenarios that need an unmined tx (`fund-unmined`, `zero-conf`, `push-fallback`) must `docker stop cb-block-generator` first and mine by hand; restart it after.
 - Arcade's fee policy reports 0 sat/KB, which Hodos's 100–10,000 sanity range rejects (it falls back to its default rate). Hodos derives mainnet-format addresses; the harness pays output scripts, not address strings.
 - The balance cache is 60 s and `internalizeAction` does not invalidate it in public mode (spv mode does).
-- In spv mode a MINED tx is confirmed only when a proof that verified against the wallet's own header chain is stored; it stays pending and retries when the header chain has not reached the block yet (sync every 30 s, proof task every 60 s, push wakes it sooner).
+- In spv mode a MINED tx is confirmed only when a proof that verified against the wallet's own header chain is stored. A proof the header chain cannot judge yet (sync trails Arcade's MINED event by seconds) is **held** in the V27 `pending_proofs` table, never in `proven_txs` (every reader of that table treats a row as verified), and is verified locally after the next header sync with no re-fetch; wrong proofs are dropped, 6 h expiry. Push events carry the MINED `merklePath` into the same table. Header sync runs every 30 s, the proof poll every 60 s.
 
 ## Where things are
 
