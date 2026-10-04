@@ -96,7 +96,7 @@ node push-fallback.mjs
 |---|---|
 | Raw tx / outspend / UTXO-by-address | No source. Errors, never "not found" or an empty list. Data arrives in BEEFs; every tx in an internalized BEEF is cached in `parent_transactions` so its outputs can be spent later. |
 | Internalized output | Marked confirmed at once if the BEEF carried a BUMP for that tx. If the subject is unmined, the output is spendable at once (zero-conf, below) when Arcade has seen the tx; otherwise it stays unconfirmed until `TaskCheckForProofs` stores a verified proof, which promotes it. |
-| Proof storage / "completed" | A MINED tx is marked confirmed only once a proof that verified against the wallet's header chain is stored. Until the header chain has the block (sync every 30 s, proof task every 60 s) it stays pending and retries. |
+| Proof storage / "completed" | A MINED tx is marked confirmed only once a proof that verified against the wallet's header chain is stored. A proof the header chain cannot judge yet (sync trails Arcade's MINED event by seconds) is **held** in the `pending_proofs` table (never in `proven_txs`), and the next header sync verifies it locally and stores it, with no re-fetch; a wrong proof is dropped, one with no header after 6 h expires. Push events carrying the MINED `merklePath` feed the same table. |
 | Broadcast | BEEF is converted to Extended Format for Arcade (it rejects BEEF); a BEEF with a missing parent is an error. |
 | `getHeight` / `getHeaderForHeight` | From the verified header chain only; 503/404 until synced. |
 | MessageBox / PeerPay polling | Off. |

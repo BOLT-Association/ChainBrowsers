@@ -11,6 +11,7 @@
 //
 //   node fund.mjs            (wallet must be running with spv env; see ../../docs/hodos-spv.md)
 import { PrivateKey, PublicKey, P2PKH, Transaction, MerklePath, Utils } from '@bsv/sdk'
+import { spendCoinbase } from './lib.mjs'
 
 const WALLET = process.env.WALLET_URL ?? 'http://127.0.0.1:31401'
 const ARCADE = process.env.ARCADE_URL ?? 'http://localhost:8080'
@@ -57,29 +58,10 @@ const invoice = `2-3241645161d8-${prefix} ${suffix}` // exactly as Hodos derives
 const childPub = walletPub.deriveChild(senderPriv, invoice)
 const payScript = new P2PKH().lock(childPub.toHash())
 
-// ---- spend a mature coinbase (try a few until Arcade accepts one) ----------------------
-const minerKey = PrivateKey.fromWif(MINER_WIF)
-const minerScript = new P2PKH().lock(minerKey.toPublicKey().toHash())
-const tip = (await rpc('getinfo')).blocks
-let tx, txid, accepted
-for (let k = 0; k < 40 && !accepted; k++) {
-  const height = tip - 100 - Math.floor(Math.random() * 60)
-  const block = await rpc('getblock', [await rpc('getblockhash', [height]), 1])
-  const cbHex = await rpc('getrawtransaction', [block.tx?.[0] ?? block.merkleroot, 0])
-  const source = Transaction.fromHex(cbHex)
-  const vout = source.outputs.findIndex(o => o.lockingScript.toHex() === minerScript.toHex())
-  if (vout < 0) continue
-  tx = new Transaction()
-  tx.addInput({ sourceTransaction: source, sourceOutputIndex: vout, unlockingScriptTemplate: new P2PKH().unlock(minerKey) })
-  tx.addOutput({ lockingScript: payScript, satoshis: AMOUNT })
-  tx.addOutput({ lockingScript: minerScript, satoshis: source.outputs[vout].satoshis - AMOUNT })
-  await tx.sign()
-  txid = tx.id('hex')
-  const res = await fetch(`${ARCADE}/tx`, { method: 'POST', headers: { 'content-type': 'text/plain' }, body: tx.toHexEF() })
-  accepted = res.status === 202
-  if (!accepted) console.log(`  coinbase at ${height} not usable (${res.status}); trying another`)
-}
-ok(accepted, `Arcade accepted funding tx ${txid.slice(0, 12)}…`)
+// ---- spend a mature coinbase (the shared helper retries until the network, not just Arcade, takes one) ----
+const tx = await spendCoinbase([{ lockingScript: payScript, satoshis: AMOUNT }])
+const txid = tx.id('hex')
+ok(true, `Arcade accepted funding tx ${txid.slice(0, 12)}…`)
 
 // ---- mine, then take the BUMP from Arcade ----------------------------------------------
 await until('SEEN_ON_NETWORK', async () => ['SEEN_ON_NETWORK', 'SEEN_ON_MULTIPLE_NODES', 'MINED'].includes((await (await fetch(`${ARCADE}/tx/${txid}`)).json()).txStatus), { timeout: 30000 })
@@ -99,7 +81,10 @@ const goodBeef = tx.toAtomicBEEF()
 // Tampered copy: corrupt one sibling hash in the BUMP so its root no longer matches the chain.
 const bad = Transaction.fromHex(tx.toHex())
 const badMp = MerklePath.fromHex(st.merklePath)
-const sib = badMp.path[0].find(l => !l.txid && l.hash)
+// Corrupt the first sibling hash anywhere in the path (the tx can be last in an odd-sized block, whose
+// level-0 sibling is a hash-less duplicate).
+let sib
+for (const level of badMp.path) { sib = level.find(l => !l.txid && l.hash); if (sib) break }
 if (sib) sib.hash = 'ab'.repeat(32)
 bad.merklePath = badMp
 const badBeef = bad.toAtomicBEEF()
