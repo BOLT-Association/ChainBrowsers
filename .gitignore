@@ -7,3 +7,4 @@ data/
 .env.local
 browsers/*/
 !browsers/README.md
+tests/cross-wallet/out/

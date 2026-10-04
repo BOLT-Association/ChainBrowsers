@@ -4,7 +4,7 @@
 
 The work is on branch `spv-hardening` of [BOLT-Association/bsv-browser](https://github.com/BOLT-Association/bsv-browser) (clone it into `browsers/bsv-browser/`, which is gitignored here). What it does, the configuration, the patch layout and the known gaps are in that branch's `docs/SPV_MODE.md`; this page is the run guide and the audit status.
 
-**Current state, stated plainly:** built and verified against the local `spv-testnet` regtest stack with a **headless** wallet (the real toolbox `Wallet` and `StorageExpoSQLite` on an in-memory SQLite database). The Expo app has **not** been run in spv mode on a device or emulator. The header rules are **regtest-only**; spv on mainnet, testnet or teratest with default rules is refused at wallet build, so it cannot be pointed at a real network yet.
+**Current state, stated plainly:** built and verified against the local `spv-testnet` regtest stack with a **headless** wallet (the real toolbox `Wallet` and `StorageExpoSQLite` on an in-memory SQLite database), and the Expo app has been run in spv mode in an **Android emulator**, where it exchanged payments with the Hodos browser (`docs/cross-wallet-e2e.md`). It has not been run on a physical device or on iOS. The header rules are **regtest-only**; spv on mainnet, testnet or teratest with default rules is refused at wallet build, so it cannot be pointed at a real network yet.
 
 ## Why a patch, and why the tests live in the fork
 
@@ -37,11 +37,10 @@ The live files are run by name when other sessions share the stack (`SPV_LIVE=1 
 
 ## 3. Pointing the app at it
 
-From an emulator or device use the host's LAN IP, not `localhost`.
+From a device use the host's LAN IP, not `localhost`; from the Android emulator use `10.0.2.2`. The exact build and launch steps that worked are in `docs/cross-wallet-e2e.md`.
 
 ```
 EXPO_PUBLIC_CHAIN_MODE=spv
-EXPO_PUBLIC_DEFAULT_CHAIN=teratest
 EXPO_PUBLIC_TERATEST_ARC_URL=http://<LAN-IP>:8080
 EXPO_PUBLIC_TERATEST_CHAINTRACKS_URL=http://<LAN-IP>:8083/chaintracks/v1
 EXPO_PUBLIC_SPV_RULES=regtest
@@ -51,7 +50,11 @@ EXPO_PUBLIC_SPV_ANCHOR_HEIGHT=0
 EXPO_PUBLIC_SPV_ANCHOR_HASH=0f9188f13cb7b2c71f2a335e3a4fc328bf5beb436012afca590b1a11466e2206
 ```
 
-Startup (wallet build) refuses spv without both URLs, with a URL that is a public indexer or not https (plain http only to a local-development host), or on a chain with no difficulty rules; an unrecognised `EXPO_PUBLIC_CHAIN_MODE` means spv, never public. Untested on a device: treat the first run as a test of the app wiring, with a throwaway wallet.
+The app's default chain is hard-coded to `main` and `EXPO_PUBLIC_DEFAULT_CHAIN` is read nowhere, so with only the `TERATEST_*` URLs set the first wallet build fails until the network is switched in the wallet-config screen (that failure is read from the code, not tried). Setting the un-prefixed `EXPO_PUBLIC_ARC_URL` / `EXPO_PUBLIC_CHAINTRACKS_URL` to the local stack as well lets the wallet build on the `main` slot, which with regtest rules is the regtest chain; that is how the emulator run was done.
+
+Startup (wallet build) refuses spv without both URLs, with a URL that is a public indexer or not https (plain http only to a local-development host), or on a chain with no difficulty rules; an unrecognised `EXPO_PUBLIC_CHAIN_MODE` means spv, never public. Use a throwaway wallet.
+
+What the emulator run showed about the app (not visible to the headless tests): pages served from an IP address get no wallet access; a page may not use the BRC-29 protocol or list the `default` basket; header sync happens only at start, on return to the foreground and every 10 minutes; and the monitor needed the chain's own header rules to prove anything on regtest (fixed in the patch, `core/spv/monitorHeaders.ts`).
 
 ## Audit status (SPV_HEADERS_FINDINGS.md, re-checked 2026-10-04)
 

@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cross-wallet spv test</title>
+<style>
+  :root { --bg:#f6f7f9; --fg:#16181d; --muted:#667085; --card:#fff; --line:#e3e6ea; --ok:#12805c; --fail:#c0362c; --accent:#3257d6; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#111317; --fg:#e8eaed; --muted:#98a2b3; --card:#1a1d23; --line:#2a2f37; --ok:#4cc79a; --fail:#ff7b6e; --accent:#8aa4ff; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; padding:16px; background:var(--bg); color:var(--fg); font:15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  h1 { font-size:18px; margin:0 0 4px; }
+  .sub { color:var(--muted); margin:0 0 14px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:12px 14px; margin-bottom:12px; }
+  dl { display:grid; grid-template-columns:auto 1fr; gap:4px 12px; margin:0; }
+  dt { color:var(--muted); }
+  dd { margin:0; overflow-wrap:anywhere; font-family:ui-monospace, Consolas, monospace; font-size:13px; }
+  ol { list-style:none; margin:0; padding:0; }
+  li { padding:6px 0; border-top:1px solid var(--line); overflow-wrap:anywhere; }
+  li:first-child { border-top:0; }
+  li.ok { color:var(--ok); } li.fail { color:var(--fail); } li.call { color:var(--muted); font-size:13px; }
+  .dot { display:inline-block; width:9px; height:9px; border-radius:50%; background:var(--fail); margin-right:6px; }
+  .dot.on { background:var(--ok); }
+</style>
+</head>
+<body>
+<h1>Cross-wallet spv test: <span id="role"></span></h1>
+<p class="sub"><span class="dot" id="dot"></span><span id="conn">connecting to the test…</span></p>
+<div class="card"><dl>
+  <dt>Wallet access</dt><dd id="transport">…</dd>
+  <dt>Identity key</dt><dd id="identity">…</dd>
+  <dt>Chain height</dt><dd id="height">…</dd>
+</dl></div>
+<div class="card"><ol id="log"><li class="call">waiting for the test to start</li></ol></div>
+<script>
+(function () {
+  var role = new URLSearchParams(location.search).get('role') || 'unnamed'
+  var $ = function (id) { return document.getElementById(id) }
+  $('role').textContent = role
+
+  // The browser's own wallet. bsv-browser injects window.CWI; Hodos answers the BRC-100
+  // JSON API on localhost:3321 for pages it does not inject into (plain http on loopback).
+  // window.CWI can be injected after this script first runs, so it is looked up at each call.
+  function hasCwi () { return typeof window.CWI === 'object' && !!window.CWI }
+  function showTransport () { $('transport').textContent = hasCwi() ? 'window.CWI' : 'http://localhost:3321 (BRC-100 JSON API)' }
+  showTransport(); setTimeout(showTransport, 1500)
+  function wallet (method, args) {
+    showTransport()
+    if (hasCwi()) return window.CWI[method](args)
+    return fetch('http://localhost:3321/' + method, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(args || {})
+    }).then(function (r) {
+      return r.text().then(function (t) {
+        var j; try { j = JSON.parse(t) } catch (_) { j = { error: t || ('HTTP ' + r.status) } }
+        // Hodos answers 200 even for a wallet error; the body says which it is.
+        if (!r.ok || (j && (j.error || j.status === 'error'))) {
+          var e = new Error((j && (j.description || j.message || j.error)) || ('HTTP ' + r.status))
+          e.code = j && j.code; e.body = j
+          throw e
+        }
+        return j
+      })
+    })
+  }
+
+  function line (text, cls) {
+    var li = document.createElement('li')
+    li.className = cls || ''
+    li.textContent = text
+    $('log').appendChild(li)
+    li.scrollIntoView({ block: 'end' })
+  }
+  function brief (v) {
+    var s = JSON.stringify(v, function (k, x) { return Array.isArray(x) && x.length > 40 ? '[' + x.length + ' bytes]' : x })
+    return s && s.length > 220 ? s.slice(0, 220) + '…' : s
+  }
+  function post (m) {
+    return fetch('/result', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(m) })
+  }
+  function show (method, value) {
+    if (method === 'getPublicKey' && value && value.publicKey && $('identity').textContent === '…') $('identity').textContent = value.publicKey
+    if (method === 'getHeight' && value && value.height != null) $('height').textContent = value.height
+  }
+
+  function run (cmd) {
+    if (cmd.kind === 'note') { line(cmd.text, cmd.level === 'step' ? '' : cmd.level); return Promise.resolve() }
+    line('→ ' + cmd.method + ' ' + brief(cmd.args), 'call')
+    return wallet(cmd.method, cmd.args).then(function (value) {
+      show(cmd.method, value)
+      line('← ' + brief(value), 'call')
+      return post({ id: cmd.id, ok: true, value: value })
+    }, function (e) {
+      line('← error: ' + e.message, 'call')
+      return post({ id: cmd.id, ok: false, error: { message: String(e && e.message || e), code: e && e.code, body: e && e.body } })
+    })
+  }
+
+  var inst = Date.now().toString(36) + Math.random().toString(36).slice(2, 8)
+  var first = true
+  function poll () {
+    fetch('/poll?role=' + encodeURIComponent(role) + '&inst=' + inst + (first ? '&hello=1' : '')).then(function (r) {
+      first = false
+      if (r.status === 410) { $('dot').className = 'dot'; $('conn').textContent = 'replaced by a newer copy of this page'; throw 'stop' }
+      $('dot').className = 'dot on'; $('conn').textContent = 'connected to the test'
+      return r.status === 200 ? r.json().then(run) : null
+    }).then(poll, function (e) {
+      if (e === 'stop') return
+      $('dot').className = 'dot'; $('conn').textContent = 'test not reachable, retrying…'
+      first = true
+      setTimeout(poll, 2000)
+    })
+  }
+  poll()
+})()
+</script>
+</body>
+</html>

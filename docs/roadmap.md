@@ -24,11 +24,15 @@
   - [ ] Hodos: spv mode has no per-input spent check, so double-spend suspects stay suspected; decide how BEEF/competingTxs can resolve them
   - [ ] Hodos: mainnet header rules (checkpoint, difficulty adjustment, median-time-past)
   - [x] bsv-browser: `EXPO_PUBLIC_CHAIN_MODE=spv` (branch `spv-hardening` of the fork, a `patch-package` patch on `@bsv/expo-wallet-toolbox`) — Arcade only, wallet-verified header chain (regtest rules, most-work reorg), strict chain tracker, proofs stored only after the wallet's own chain verifies them, public indexers refused; unit tests with negative controls and live headless-wallet tests (`docs/bsv-browser-spv.md`)
-  - [ ] bsv-browser: run the app (not just the headless wallet) in spv mode on a device or emulator
+  - [x] bsv-browser: the app runs in spv mode in an Android emulator (debug build, wallet created, headers synced from the local chaintracks, payments received and sent through `window.CWI`); see `docs/cross-wallet-e2e.md`
+  - [x] bsv-browser: the monitor validates headers under the chain's own rules in spv mode, so a payment received unmined is proven on regtest (it never was in the app: the toolbox monitor demanded mainnet proof of work)
+  - [ ] bsv-browser: the monitor's first new-header poll runs before the header store is open and then backs off five minutes, so proofs can lag right after the app starts
   - [x] bsv-browser: https-only Arcade/chaintracks/SSE URLs, Arcade API key (Bearer, every Arcade client), SSE push (`EXPO_PUBLIC_SPV_SSE_URL`), zero-conf (an unmined payment is accepted only once Arcade has seen it); all tested live on regtest
   - [ ] bsv-browser: mainnet / testnet header rules (checkpoint, difficulty adjustment, median-time-past)
   - [ ] bsv-browser: the toolbox's SSE client does not reconnect by itself (the app calls `fetchSSEEvents()`), so there is no immediate push after a dropped stream (decided 2026-10-04: not worth fixing yet, push is a latency gain behind working polling; if the emulator run shows stalls after backgrounding, add a foreground timer calling `monitor.fetchSSEEvents()` about every 30 s, with a unit test and a live test that kills the stream)
   - [ ] bsv-browser: public mode still trusts the remote for page-facing header calls (opt-in switch by design); decide whether to harden it or send the changes upstream
+- [x] Cross-wallet e2e: the Hodos browser and BSV Browser (Android emulator) side by side, both in spv mode, each funded from the chain and paying the other unmined, both proving the payments once mined (`tests/cross-wallet`, `docs/cross-wallet-e2e.md`)
+  - [ ] A wallet-to-wallet channel that works in spv mode (the test relays the BEEF; Hodos refuses PeerPay in spv mode and BSV Browser's is untested without a public MessageBox)
 - [ ] Injected provider API for pages to request BOLT operations
 
 ## Phase 4 – Scenarios
