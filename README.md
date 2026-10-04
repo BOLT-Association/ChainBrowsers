@@ -14,7 +14,7 @@ Test environment for integrating **BOLT** (Bitcoin Original Layer-1 Token) proto
 ```
  Browser(s)                         spv-testnet (Docker)
 ┌──────────────────────┐          ┌──────────────────────────────┐
-│ BOLT handler (b017)  │  ARC API │ Arcade  ──libp2p──┐          │
+│ BOLT handler (b017)  │    API   │ Arcade  ──libp2p──┐          │
 │ Browser's own SPV:   │ ───────► │ (broadcast/status)│          │
 │  - header chain      │          │ merkle-service ───┤          │
 │  - merkle verify     │ ◄─────── │ Teranode regtest ◄┘          │
@@ -36,5 +36,5 @@ The chain stack and its tests live in the private repo [BOLT-Association/spv-tes
 ## References
 
 - [BOLT-Association/b017](https://github.com/BOLT-Association/b017) – BOLT token library (TypeScript)
-- [bsv-blockchain/arcade](https://github.com/bsv-blockchain/arcade) – ARC-compatible broadcaster for Teranode
+- [bsv-blockchain/arcade](https://github.com/bsv-blockchain/arcade) – broadcaster for Teranode
 - [bsv-blockchain/overlay-services](https://github.com/bitcoin-sv/overlay-services) – overlay engine, Merkle path forwarding to SPV wallets
