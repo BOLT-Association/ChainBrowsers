@@ -1,0 +1,7 @@
+{
+  "name": "chainbrowsers-hodos-spv",
+  "private": true,
+  "type": "module",
+  "scripts": { "fund": "node fund.mjs" },
+  "dependencies": { "@bsv/sdk": "^1.8.11" }
+}

@@ -2,7 +2,8 @@
 
 ## Phase 0 – Chain stack (done, lives in spv-testnet)
 - [x] Teranode regtest + merkle-service + Arcade, one-command boot, tx round trip and forced reorg tested (see spv-testnet README for known issues)
-- [ ] Fix or work around: second reorg on one chain stalls `generate`; 401s from Teranode's asset server to Arcade
+- [x] Repeated forced reorgs on one chain work (`rpc_timeout` and `generateTipWaitTimeout` raised in `settings.conf`); the Teranode asset-server 401s to Arcade are harmless (Arcade's health probe)
+- Arcade API: `POST /tx` / `GET /tx/{txid}` have no `/v1` prefix (only `/v1/policy` is aliased), new submissions return `202`, and there is no API key
 
 ## Phase 1 – Browser SPV checks (the browsers own SPV; we verify it)
 - [ ] Browser syncs headers from Arcade chaintracks (`:8083`) / Teranode asset server, accepting regtest PoW rules
@@ -16,6 +17,12 @@
 
 ## Phase 3 – Browsers
 - [ ] Hodos Browser (desktop, Rust wallet) first, then BSV Browser (mobile, Expo); see `browsers/README.md`
+  - [x] Hodos: `HODOS_CHAIN_MODE=spv` — Arcade for broadcast/status/proofs, chaintracks for headers, wallet-verified header chain (PoW, difficulty, most-work, reorg), BEEF proof checks, reorg proof re-check, no public-indexer calls
+  - [x] Hodos: fund a wallet in spv mode by BEEF and spend it (`tests/hodos-spv`, run guide `docs/hodos-spv.md`); verified on a real wallet process with a throwaway data dir
+  - [x] Hodos: promote an internalized output whose BEEF subject had no BUMP when its proof arrives later (spv mode; `tests/hodos-spv/fund-unmined.mjs`)
+  - [ ] Hodos: wake the proof task from Arcade's SSE stream instead of waiting for the 60 s poll (optional latency work)
+  - [ ] Hodos: spv mode has no per-input spent check, so double-spend suspects stay suspected; decide how BEEF/competingTxs can resolve them
+  - [ ] Hodos: mainnet header rules (checkpoint, difficulty adjustment, median-time-past)
 - [ ] Injected provider API for pages to request BOLT operations
 
 ## Phase 4 – Scenarios
