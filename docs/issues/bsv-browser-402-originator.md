@@ -49,7 +49,7 @@ The handler uses the wallet without the page-facing guard, but spending authoriz
 | Case | What happens |
 |---|---|
 | The named site holds a spending authorization with allowance left | No prompt. The payment is taken from that site's allowance. (Read in the toolbox bundle on the first pass; not re-read here.) |
-| Amount at or below the auto-approve threshold (default 100,000 sat) | No prompt (`WalletContext.tsx:1111-1124`). The 10 s cooldown is per originator (`autoApprovePolicy.ts`), so naming a different site each time avoids it. The global cap is 1,000,000 sat per 24 h (`constants.ts:17`). |
+| Amount at or below the auto-approve threshold (default 100,000 sat), for **any** site including one the user has never visited | No prompt (`WalletContext.tsx:1111-1124`). `shouldAutoApprove` (`autoApprovePolicy.ts`) checks only the amount, a per-originator cooldown a fresh origin passes, and the daily cap — never whether the origin is trusted. The 10 s cooldown is per originator, so naming a different site each time avoids it. Global cap 1,000,000 sat per 24 h (`constants.ts:17`). |
 | Anything else | A spending prompt that names the spoofed site, for the amount the page chose. |
 
 The handler has no amount limit of its own: `Number.parseInt(satsHeader)` (153).

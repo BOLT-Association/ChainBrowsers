@@ -37,9 +37,14 @@ without the named site ever requesting payment.
 
 **Why it matters**
 
-- The spend is attributed to, and charged against, a site the user did not transact with: that site's
-  spending authorization, or the global auto-approve budget, can be drained with no prompt; above those
-  limits the user sees a spending prompt that names a *trusted* site for an attacker-chosen amount.
+- The spend is attributed to, and charged against, the page-named site. That site need NOT be one the
+  user has ever visited or trusted: by default (auto-approve threshold 100,000 sat) an unknown
+  originator is auto-approved with no prompt up to 100,000 sat/payment and 1,000,000 sat/24h. The
+  auto-approve check (`autoApprovePolicy.ts`, via `spendingAuthorizationCallback`) tests only the
+  amount, a per-originator cooldown a fresh origin passes, and a global daily cap — never whether the
+  origin is known. Naming a site the user already granted a spending authorization pushes a larger
+  amount through silently; above the caps with no token the user sees a prompt, but it names the
+  spoofed site. (Setting the auto-approve threshold to 0 disables the silent path.)
 - Money leaves the wallet without the user's intent and cannot be clawed back.
 - If the named site has an open redirect, the attacker can also collect the funds; otherwise the funds
   are typically lost rather than stolen. Either way the user's loss is real.
