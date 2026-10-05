@@ -1,6 +1,6 @@
 # Could the wallet<=>browser interface be much simpler?
 
-Finding, 2026-10-05. Both browsers expose the full 28-method BRC-100 `WalletInterface` to web pages. This note asks what BOLT needs from that interface and what a simpler one would look like. It is the companion to `simplification.md`, which covers the wallet core.
+Finding, 2026-10-05. Both browsers expose the full 28-method BRC-100 `WalletInterface` to web pages. This note asks what BOLT needs from that interface and what a simpler one would look like. It is the companion to `simplification.md` (the wallet core) and `bolt-store-review.md` (the DB schema: a token store versus the BRC-100 metadata layer).
 
 **Short answer: yes, and BRC-100 is the wrong shape in both directions.** BOLT, as b017 defines it, needs five things from a wallet: a key, a signature over a digest, the wallet's verified headers, a broadcast, and somewhere to keep token packages. BRC-100 offers the first three, has no call for the last two, and carries about 22 methods BOLT never touches. Its transaction builder (`createAction`) cannot build a token transaction, because the covenant fixes the layout the wallet would want to choose.
 
