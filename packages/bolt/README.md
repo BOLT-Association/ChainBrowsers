@@ -45,5 +45,5 @@ node live/hodos.live.mjs
 
 - **Browser wiring.** Neither browser injects `window.BOLT` yet. The live test drives Hodos through its BRC-100 HTTP interface from Node.
 - **Fungible tokens.** `SimpleMultiBOLT` (split, merge) is not handled; b017's class for it holds a private key.
-- **A durable store.** `memoryStore` only. A held token's package is the only copy of an off-chain event, so a browser must persist and back it up.
+- **Backup.** A durable, type-agnostic store exists (`sqlStore` over a SQL adapter; `nodeSqliteStore` for Node; `memoryStore` for tests), keeping the BEEF plus the full anchor (its tx, kind, network status, proof state, and the provenance anchor). A held token's package is still the only copy of an off-chain event, so a browser must also back it up. The proof-refresh loop (`setAnchorProof` on a later poll/reorg) is a hook, not yet wired.
 - **Proof upkeep.** A held token's BEEF keeps its unmined ancestors; nothing replaces them with merkle paths once they are mined.

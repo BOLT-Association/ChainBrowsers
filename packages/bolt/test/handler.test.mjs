@@ -5,7 +5,10 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { Hash, MerklePath, PrivateKey, ProtoWallet, Script, Transaction, UnlockingScript, Utils } from '@bsv/sdk'
 import { fromBeef, toAtomicBeef, verifyTx } from 'b017'
-import { BoltHandler, brc100Core, dispatcher, pageClient } from '../src/index.js'
+import { mkdtemp } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { BoltHandler, brc100Core, dispatcher, memoryStore, nodeSqliteStore, pageClient } from '../src/index.js'
 
 function pretendChain () {
   const headers = new Map() // height -> 80-byte header hex
@@ -42,7 +45,7 @@ function pretendChain () {
   return { headers, seen, sent, mine, broadcast }
 }
 
-function walletOn (chain, opts = {}) {
+function walletOn (chain, { store = memoryStore(), ...opts } = {}) {
   const proto = new ProtoWallet(PrivateKey.fromRandom())
   const calls = []
   const wallet = {
@@ -55,8 +58,8 @@ function walletOn (chain, opts = {}) {
       return { txid: tx.id('hex'), tx: tx.toAtomicBEEF() }
     }
   }
-  const handler = new BoltHandler({ core: brc100Core({ wallet, broadcast: chain.broadcast }), ...opts })
-  return { handler, calls }
+  const handler = new BoltHandler({ core: brc100Core({ wallet, broadcast: chain.broadcast, store }), ...opts })
+  return { handler, calls, store }
 }
 
 async function issued (type = 'AuthBOLT') {
@@ -190,4 +193,56 @@ test('a page reaches the handler through the dispatcher, and the user is asked b
   assert.equal((await BOLT.list()).length, 1)
   await assert.rejects(pageClient((r) => serve('https://example.com', { ...r, method: 'core' }))['getKey'](), /unsupported method/)
   await assert.rejects(pageClient((r) => serve('https://example.com', { ...r, method: 'constructor' }))['getKey'](), /unsupported method/)
+})
+
+test('a kept token records everything known about its anchor: a mint anchor, then a settle anchor + provenance', async () => {
+  const chain = pretendChain()
+  const issuer = walletOn(chain)
+  const issuerKey = (await issuer.handler.getKey()).publicKey
+  const user = walletOn(chain, { trustedIssuers: [issuerKey] })
+
+  const minted = await issuer.handler.mint({ type: 'AuthBOLT' })
+  const mrec = await issuer.store.get(minted.id)
+  assert.equal(mrec.anchor.kind, 'mint')
+  assert.ok(['accepted', 'already-seen'].includes(mrec.anchor.network), mrec.anchor.network)
+  assert.equal(mrec.anchor.txid, minted.id.split('.')[0])
+  assert.equal(mrec.type, 'AuthBOLT')
+  assert.equal(mrec.issuer, issuerKey)
+  assert.equal(mrec.owner, (await issuer.handler.getKey()).pubKeyHash)
+
+  const { package: pkg } = await issuer.handler.transfer(minted.id, (await user.handler.getKey()).pubKeyHash)
+  assert.equal(await issuer.store.get(minted.id), undefined) // the token left the issuer on transfer
+
+  const got = await user.handler.receive(pkg)
+  const rec = await user.store.get(got.tokenId)
+  assert.equal(rec.anchor.kind, 'settle')
+  assert.equal(rec.anchor.txid, got.tokenId.split('.')[0])
+  assert.ok(['accepted', 'already-seen'].includes(rec.anchor.network), rec.anchor.network)
+  assert.equal(rec.anchor.proven, false) // freshly broadcast, not yet mined
+  assert.equal(rec.provenance.kind, 'mint') // the package stood on the mint
+  assert.match(rec.provenance.txid, /^[0-9a-f]{64}$/)
+  assert.equal(rec.owner, (await user.handler.getKey()).pubKeyHash)
+})
+
+test('the handler persists tokens in a sqlite store across a reopen', async () => {
+  const file = join(await mkdtemp(join(tmpdir(), 'bolt-')), 'bolt.db')
+  const chain = pretendChain()
+  const issuer = walletOn(chain)
+  const issuerKey = (await issuer.handler.getKey()).publicKey
+  const user = walletOn(chain, { trustedIssuers: [issuerKey], store: nodeSqliteStore(file) })
+
+  const minted = await issuer.handler.mint({ type: 'AuthBOLT' })
+  const { package: pkg } = await issuer.handler.transfer(minted.id, (await user.handler.getKey()).pubKeyHash)
+  const got = await user.handler.receive(pkg)
+  assert.equal(got.ok, true, got.reason)
+  user.store.close()
+
+  const reopened = nodeSqliteStore(file) // same file, fresh connection
+  const rec = await reopened.get(got.tokenId)
+  assert.ok(rec, 'the token survived the reopen')
+  assert.equal(rec.type, 'AuthBOLT')
+  assert.equal(rec.issuer, issuerKey)
+  assert.equal(rec.anchor.kind, 'settle')
+  assert.equal((await reopened.list()).length, 1)
+  reopened.close()
 })

@@ -8,7 +8,7 @@
 // Either way what travels is `[beef(commit), beef(settle)]`: Atomic BEEF hex, with the anchor inside.
 import { Hash, P2PKH, Utils } from '@bsv/sdk'
 import { AUTH_DATA_MAX_BYTES, fromBeef, toAtomicBeef, verifyAndBroadcast } from 'b017'
-import { NFT_TYPES, buildCommit, buildMint, buildSettle, readToken } from './nft.js'
+import { NFT_TYPES, buildCommit, buildMint, buildSettle, indexFields, readToken } from './nft.js'
 import { signWith, sizeOf } from './signer.js'
 
 const hex = (bytes) => Utils.toHex(bytes)
@@ -47,8 +47,8 @@ export class BoltHandler {
     const issuerPkh = Hash.hash160(issuerPubKey)
     const fund = await this.core.fund(new P2PKH().lock(issuerPkh), fundSats)
     const tx = await this.#sign((key, fee) => buildMint({ type, key, issuerPubKey, issuerPkh, fund, fee }))
-    await this.#send(tx, 'mint')
-    return this.#keep(tx)
+    const network = await this.#send(tx, 'mint')
+    return this.#keep(tx, 0, { kind: 'mint', network, provenance: null })
   }
 
   /**
@@ -127,22 +127,27 @@ export class BoltHandler {
       holder: hex(spent.owner),
       data: data && hex(data),
       tokenId: idOf(settle),
+      anchors: result.anchors, // what the package stood on: [{ txid, kind, status }]
       txs: { commit, settle }
     }
   }
 
   /** Verify a transfer addressed to this wallet, see that the network has it, and keep the token. */
   async receive (pkg, opts = {}) {
-    const { txs, ...checked } = await this.verify(pkg, opts)
+    const { txs, anchors, ...checked } = await this.verify(pkg, opts)
     if (!checked.ok) return checked
     if (checked.kind !== 'transfer') return { ok: false, reason: 'this package is a presentation, not a transfer: nothing to keep' }
     if (checked.owner !== (await this.getKey()).pubKeyHash) return { ok: false, reason: 'the token is not addressed to this wallet' }
     // The settle becomes the anchor of whatever this wallet does next, so the network must have it.
+    let settleStatus = null
     for (const [name, tx] of Object.entries(txs)) {
       const sent = await this.core.broadcast(tx)
       if (sent.status === 'rejected') return { ok: false, reason: `the network refused the ${name}: ${sent.detail ?? ''}` }
+      if (name === 'settle') settleStatus = sent.status
     }
-    await this.#keep(txs.settle)
+    // Keep the token, recording everything we know about its anchor: the settle it rests on (network
+    // status + proof state against our headers) and the anchor the package descended from (provenance).
+    await this.#keep(txs.settle, 0, { kind: 'settle', network: settleStatus, provenance: anchors?.[0] ?? null })
     return checked
   }
 
@@ -156,11 +161,44 @@ export class BoltHandler {
     return token
   }
 
-  async #keep (tx, vout = 0) {
+  async #keep (tx, vout = 0, meta = {}) {
     const token = readToken(tx, vout)
-    const record = { id: idOf(tx, vout), type: token.type, issuer: hex(token.issuer), vout, beef: hex(toAtomicBeef(tx)) }
+    const { amount, attributes } = indexFields(token)
+    const anchor = await this.#anchor(tx, meta.kind ?? 'settle', meta.network)
+    const record = {
+      id: idOf(tx, vout),
+      outpoint: idOf(tx, vout),
+      vout,
+      type: token.type,
+      issuer: hex(token.issuer),
+      owner: hex(token.owner),
+      status: 'held',
+      amount,
+      attributes,
+      beef: hex(toAtomicBeef(tx)),
+      anchor,
+      provenance: meta.provenance ?? null
+    }
     await this.core.store.put(record)
     return { id: record.id, type: record.type, issuer: record.issuer }
+  }
+
+  /**
+   * Everything we know about the anchor the token rests on: its txid and kind, the network status
+   * last reported, and whether its merkle path proves it into a header we hold (so a later proof-poll
+   * or reorg recheck has a baseline). A freshly broadcast token is usually not yet proven.
+   */
+  async #anchor (tx, kind, network) {
+    let proven = false; let height; let merkleRoot
+    if (tx.merklePath) {
+      try {
+        const root = tx.merklePath.computeRoot(tx.id('hex'))
+        if (await this.core.isValidRootForHeight(root, tx.merklePath.blockHeight)) {
+          proven = true; height = tx.merklePath.blockHeight; merkleRoot = root
+        }
+      } catch { /* not proven; leave it unproven */ }
+    }
+    return { txid: tx.id('hex'), kind, network: network ?? null, proven, height, merkleRoot }
   }
 
   /** Size the tx with a zero fee, then sign it with the fee that size needs. */
@@ -173,5 +211,6 @@ export class BoltHandler {
   async #send (tx, name) {
     const sent = await this.core.broadcast(tx)
     if (sent.status === 'rejected') throw new Error(`the network refused the ${name}: ${sent.detail ?? 'no detail'}`)
+    return sent.status
   }
 }

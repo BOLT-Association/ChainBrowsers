@@ -108,4 +108,14 @@ export function buildSettle ({ token, commit, key, toPkh, auth, fund, fee = 0 })
   return tx
 }
 
+/**
+ * What the store indexes beyond the shared spine (outpoint/type/issuer/owner), per type. The NFT
+ * family carries nothing extra at rest — AuthBOLT's `authOrMiscData` lives in a presentation, not in
+ * the resting lock. A fungible `readToken` would set `amount`; a future type adds its own keys here,
+ * never a column (see docs/bolt-store-review.md). Reads whatever the recognizer put on the token.
+ */
+export function indexFields (token) {
+  return { amount: token.amount ?? null, attributes: token.attributes ?? {} }
+}
+
 export { ZERO36 }

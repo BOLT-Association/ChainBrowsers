@@ -3,3 +3,5 @@ export { BOLT_PROTOCOL, arcadeBroadcaster, brc100Core, memoryStore } from './cor
 export { NFT_TYPES, readToken } from './nft.js'
 export { signWith } from './signer.js'
 export { PAGE_METHODS, dispatcher, pageClient } from './page.js'
+export { TOKENS_SCHEMA, nodeSqliteStore, sqlStore } from './store.js'
+export { indexFields } from './nft.js'
