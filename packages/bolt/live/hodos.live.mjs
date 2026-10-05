@@ -87,5 +87,18 @@ const wrong = await site.verify(pkg, { issuer: '02' + '11'.repeat(32) })
 assert.equal(wrong.ok, false)
 step(`a foreign issuer is refused (${wrong.reason.slice(0, 40)}…)`)
 
+// --- fungible (SimpleMultiBOLT): mint with an amount, transfer the whole token, receive ---
+const fmint = await issuer.mint({ type: 'SimpleMultiBOLT', amount: '1000000' })
+step(`Hodos minted SimpleMultiBOLT ${fmint.id.slice(0, 16)}… amount 1000000 (on the network)`)
+assert.equal(await issuer.balance(issuerKey), '1000000')
+const fpkg = (await issuer.transfer(fmint.id, (await user.getKey()).publicKey)).package
+step(`Hodos transferred the fungible token (${Math.round(fpkg.join('').length / 2)} bytes of BEEF)`)
+const fgot = await user.receive(fpkg)
+assert.equal(fgot.ok, true, fgot.reason)
+assert.equal(fgot.type, 'SimpleMultiBOLT')
+assert.equal(await issuer.balance(issuerKey), '0')
+assert.equal(await user.balance(issuerKey), '1000000')
+step(`the user received it; balances moved (issuer 0, user ${await user.balance(issuerKey)})`)
+
 console.log('wallet methods used:', [...calls].sort().join(', '))
 console.log('PASS BOLT handler on Hodos + Arcade')
