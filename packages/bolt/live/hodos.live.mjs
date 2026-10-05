@@ -100,5 +100,16 @@ assert.equal(await issuer.balance(issuerKey), '0')
 assert.equal(await user.balance(issuerKey), '1000000')
 step(`the user received it; balances moved (issuer 0, user ${await user.balance(issuerKey)})`)
 
+// --- partial payment by split: mint 1000, pay the user 250, keep the remainder ---
+await issuer.mint({ type: 'SimpleMultiBOLT', amount: '1000' })
+const userBefore = BigInt(await user.balance(issuerKey))
+const ppkg = (await issuer.pay(issuerKey, '250', (await user.getKey()).publicKey)).package
+const pgot = await user.receive(ppkg)
+assert.equal(pgot.ok, true, pgot.reason)
+assert.equal(pgot.kind, 'split')
+assert.equal(await issuer.balance(issuerKey), '750')
+assert.equal(BigInt(await user.balance(issuerKey)), userBefore + 250n)
+step(`Hodos paid the user 250 by split (self-transfer + split, on the network); issuer keeps 750`)
+
 console.log('wallet methods used:', [...calls].sort().join(', '))
 console.log('PASS BOLT handler on Hodos + Arcade')

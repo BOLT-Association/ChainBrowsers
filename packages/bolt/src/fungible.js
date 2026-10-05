@@ -26,9 +26,10 @@ export async function mintFungible ({ signer, fund, amount }) {
   return t
 }
 
-/** Rebuild a SimpleMultiBOLT instance from a held token's BEEF subject tx so it can be spent again.
- *  Walks input[0] back over the token lineage the package carries (ending at the settle/mint anchor). */
-export function reconstructFungible (subjectTx, signer) {
+/** Rebuild a SimpleMultiBOLT instance from a held token's BEEF subject tx (token at `vout`) so it can
+ *  be spent again. Walks input[0] back over the token lineage the package carries (ending at the
+ *  settle/mint anchor); only the tail is needed, as the ancestor index counts from the end. */
+export function reconstructFungible (subjectTx, signer, vout = 0) {
   const lineage = []
   let tx = subjectTx
   while (tx && recognizeType(tx.outputs[0]?.lockingScript) === 'SimpleMultiBOLT') {
@@ -37,11 +38,11 @@ export function reconstructFungible (subjectTx, signer) {
   }
   lineage.reverse() // [anchor(settle|mint), …, subject]
 
-  const lock = subjectTx.outputs[0].lockingScript
+  const lock = subjectTx.outputs[vout].lockingScript
   const t = new SimpleMultiBOLT()
   t.signer = signer
   t.tx = subjectTx
-  t.voutIdx = 0
+  t.voutIdx = vout
   t.prevTxs = lineage
   t.pubKey = signer.publicKey
   t.pubKeyHash = Hash.hash160(signer.publicKey)
@@ -52,9 +53,18 @@ export function reconstructFungible (subjectTx, signer) {
 }
 
 /** Transfer the whole fungible token to `toPubKey` (33-byte compressed). Self-funds from the token's
- *  change. Returns the built commit and settle (unbroadcast). */
+ *  change. Mutates `t` to the new settled state and returns the built commit and settle (unbroadcast). */
 export async function transferFungible (t, toPubKey) {
   await t.transfer(toPubKey)
   const n = t.prevTxs.length
   return { commit: t.prevTxs[n - 2], settle: t.prevTxs[n - 1] }
+}
+
+/** Split `t`, paying `amount` to `recipientPubKey` and keeping the remainder to `selfPubKey`. The split
+ *  settle carries the remainder at vout 0 and the paid piece at vout 1. Returns the built commit/settle.
+ *  b017's split needs a grandparent, so `t` must have been transferred at least once (lineage ≥ 3). */
+export async function splitFungible (t, selfPubKey, recipientPubKey, amount) {
+  const [main] = await t.split(selfPubKey, recipientPubKey, amountToLE(amount))
+  const n = main.prevTxs.length
+  return { commit: main.prevTxs[n - 2], settle: main.prevTxs[n - 1] }
 }

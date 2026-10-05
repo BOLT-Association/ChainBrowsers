@@ -85,3 +85,58 @@ test('a 128-bit amount survives mint and store (no 64-bit truncation)', async ()
   assert.equal((await issuer.handler.list())[0].amount, big)
   assert.equal(await issuer.handler.balance(issuerKey), big)
 })
+
+test('pay part of a balance: split keeps the remainder, the recipient gets the piece', async () => {
+  const chain = pretendChain()
+  const issuer = walletOn(chain)
+  const issuerKey = (await issuer.handler.getKey()).publicKey
+  const user = walletOn(chain, { trustedIssuers: [issuerKey] })
+  await issuer.handler.mint({ type: 'SimpleMultiBOLT', amount: '1000' })
+
+  const { package: pkg } = await issuer.handler.pay(issuerKey, '300', (await user.handler.getKey()).publicKey)
+  const got = await user.handler.receive(pkg)
+  assert.equal(got.ok, true, got.reason)
+  assert.equal(got.kind, 'split')
+  assert.equal(got.type, 'SimpleMultiBOLT')
+  assert.equal(await issuer.handler.balance(issuerKey), '700') // remainder, still spendable
+  assert.equal(await user.handler.balance(issuerKey), '300')   // the paid piece
+})
+
+test('pay again from the remainder', async () => {
+  const chain = pretendChain()
+  const issuer = walletOn(chain)
+  const issuerKey = (await issuer.handler.getKey()).publicKey
+  const user = walletOn(chain, { trustedIssuers: [issuerKey] })
+  const site = walletOn(chain, { trustedIssuers: [issuerKey] })
+  await issuer.handler.mint({ type: 'SimpleMultiBOLT', amount: '1000' })
+
+  await issuer.handler.pay(issuerKey, '300', (await user.handler.getKey()).publicKey)
+  const { package: pkg2 } = await issuer.handler.pay(issuerKey, '200', (await site.handler.getKey()).publicKey)
+  assert.equal((await site.handler.receive(pkg2)).ok, true)
+  assert.equal(await issuer.handler.balance(issuerKey), '500')
+  assert.equal(await site.handler.balance(issuerKey), '200')
+})
+
+test('pay the exact balance transfers the whole token', async () => {
+  const chain = pretendChain()
+  const issuer = walletOn(chain)
+  const issuerKey = (await issuer.handler.getKey()).publicKey
+  const user = walletOn(chain, { trustedIssuers: [issuerKey] })
+  await issuer.handler.mint({ type: 'SimpleMultiBOLT', amount: '500' })
+
+  const { package: pkg } = await issuer.handler.pay(issuerKey, '500', (await user.handler.getKey()).publicKey)
+  const got = await user.handler.receive(pkg)
+  assert.equal(got.ok, true, got.reason)
+  assert.equal(got.kind, 'transfer') // exact amount = whole token
+  assert.equal(await issuer.handler.balance(issuerKey), '0')
+  assert.deepEqual(await issuer.handler.list(), [])
+  assert.equal(await user.handler.balance(issuerKey), '500')
+})
+
+test('pay more than any single token holds is refused', async () => {
+  const chain = pretendChain()
+  const issuer = walletOn(chain)
+  const issuerKey = (await issuer.handler.getKey()).publicKey
+  await issuer.handler.mint({ type: 'SimpleMultiBOLT', amount: '100' })
+  await assert.rejects(issuer.handler.pay(issuerKey, '200', '02' + '33'.repeat(32)), /at least 200/)
+})

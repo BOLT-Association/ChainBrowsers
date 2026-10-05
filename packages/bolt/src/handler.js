@@ -9,7 +9,7 @@
 import { Hash, P2PKH, Utils } from '@bsv/sdk'
 import { AUTH_DATA_MAX_BYTES, fromBeef, toAtomicBeef, verifyAndBroadcast } from 'b017'
 import { NFT_TYPES, buildCommit, buildMint, buildSettle, indexFields, readToken } from './nft.js'
-import { mintFungible, reconstructFungible, transferFungible } from './fungible.js'
+import { mintFungible, reconstructFungible, splitFungible, transferFungible } from './fungible.js'
 import { signWith, sizeOf, walletSigner } from './signer.js'
 
 const hex = (bytes) => Utils.toHex(bytes)
@@ -100,11 +100,52 @@ export class BoltHandler {
     const toPubKey = bytesOf(to)
     if (toPubKey.length !== 33) throw new Error('a SimpleMultiBOLT transfer needs the recipient 33-byte public key')
     const signer = await walletSigner(this.core, this.keyId)
-    const t = reconstructFungible(token.tx, signer)
+    const t = reconstructFungible(token.tx, signer, token.vout)
     const { commit, settle } = await transferFungible(t, toPubKey)
     await this.#send(commit, 'commit')
     await this.#send(settle, 'settle')
     await this.core.store.delete(id)
+    return { package: [commit, settle].map((tx) => hex(toAtomicBeef(tx))) }
+  }
+
+  /**
+   * Pay `amount` of a fungible token (issuer's compressed pubkey, hex) to `to` (recipient 33-byte
+   * pubkey): splits a held token, keeping the remainder, and returns the package for the recipient's
+   * piece. An exact amount transfers the whole token. The remainder stays spendable; a received split
+   * piece has no change of its own, so re-spending it will need external funding (not wired yet).
+   * @returns `{ package }`
+   */
+  async pay (issuer, amount, to) {
+    const iss = issuer.toLowerCase()
+    const toPubKey = bytesOf(to)
+    if (toPubKey.length !== 33) throw new Error('pay needs the recipient 33-byte public key')
+    const want = BigInt(amount)
+    if (want <= 0n) throw new Error('amount must be positive')
+    const cand = (await this.core.store.list()).find(
+      (r) => r.type === 'SimpleMultiBOLT' && r.issuer === iss && r.amount != null && BigInt(r.amount) >= want)
+    if (!cand) throw new Error(`no single SimpleMultiBOLT of ${iss} holds at least ${amount}`)
+
+    const token = await this.#held(cand.id)
+    const signer = await walletSigner(this.core, this.keyId)
+    let t = reconstructFungible(token.tx, signer, token.vout)
+
+    if (BigInt(cand.amount) === want) {
+      const { commit, settle } = await transferFungible(t, toPubKey)
+      await this.#send(commit, 'commit'); await this.#send(settle, 'settle')
+      await this.core.store.delete(cand.id)
+      return { package: [commit, settle].map((tx) => hex(toAtomicBeef(tx))) }
+    }
+
+    // split needs a grandparent; a genesis / single-hop token gets a self-transfer first to build one.
+    if (t.prevTxs.length < 3) {
+      const self = await transferFungible(t, signer.publicKey)
+      await this.#send(self.commit, 'self-commit'); await this.#send(self.settle, 'self-settle')
+    }
+    const { commit, settle } = await splitFungible(t, signer.publicKey, toPubKey, amount)
+    await this.#send(commit, 'commit')
+    const settleStatus = await this.#send(settle, 'settle')
+    await this.core.store.delete(cand.id)
+    await this.#keep(settle, 0, { kind: 'settle', network: settleStatus, provenance: null }) // remainder to self
     return { package: [commit, settle].map((tx) => hex(toAtomicBeef(tx))) }
   }
 
@@ -129,8 +170,8 @@ export class BoltHandler {
    * Check a package: scripts executed, issuer trusted, anchor proven by the wallet's headers or accepted by
    * the network. Never stores anything.
    * @param issuer  narrow the trusted issuers to this one public key (hex)
-   * @returns `{ ok, reason? }` and, when ok: `kind` ('transfer' | 'presentation'), `type`, `issuer`,
-   *          `owner` (pubKeyHash the settle pays), `holder` (pubKeyHash that signed), `data` (AuthBOLT), `tokenId`
+   * @returns `{ ok, reason? }` and, when ok: `kind` ('transfer' | 'split' | 'presentation'), `type`,
+   *          `issuer`, `owner`/`holder` (settle vout 0; a split also pays vout 1), `data` (AuthBOLT), `tokenId`
    */
   async verify (pkg, { issuer } = {}) {
     let txs
@@ -151,7 +192,9 @@ export class BoltHandler {
     })
     if (!result.ok) return { ok: false, reason: result.reason }
     const events = result.events.filter((e) => e.kind !== 'mint')
-    if (events.length !== 1 || events[0].kind !== 'transfer') return { ok: false, reason: 'a package holds exactly one commit and settle' }
+    if (events.length !== 1 || !['transfer', 'split'].includes(events[0].kind)) {
+      return { ok: false, reason: 'a package holds exactly one transfer or split (commit and settle)' }
+    }
 
     const [commit, settle] = events[0].txids.map((txid) => txs.find((tx) => tx.id('hex') === txid))
     const settled = readToken(settle)
@@ -159,7 +202,7 @@ export class BoltHandler {
     const data = result.type === 'AuthBOLT' ? (commit.inputs[0].unlockingScript.chunks[0].data ?? []) : undefined
     return {
       ok: true,
-      kind: result.offChainOnly ? 'presentation' : 'transfer',
+      kind: result.offChainOnly ? 'presentation' : events[0].kind,
       type: result.type,
       issuer: result.issuerPubKeyHex,
       owner: hex(settled.owner),
@@ -171,12 +214,21 @@ export class BoltHandler {
     }
   }
 
-  /** Verify a transfer addressed to this wallet, see that the network has it, and keep the token. */
+  /** Verify a transfer or split addressed to this wallet, see that the network has it, and keep the
+   *  output that pays this wallet (vout 0 for a transfer, vout 1 for a split piece). */
   async receive (pkg, opts = {}) {
     const { txs, anchors, ...checked } = await this.verify(pkg, opts)
     if (!checked.ok) return checked
-    if (checked.kind !== 'transfer') return { ok: false, reason: 'this package is a presentation, not a transfer: nothing to keep' }
-    if (checked.owner !== (await this.getKey()).pubKeyHash) return { ok: false, reason: 'the token is not addressed to this wallet' }
+    if (checked.kind === 'presentation') return { ok: false, reason: 'this package is a presentation, not a transfer: nothing to keep' }
+    // Find the settle output addressed to this wallet (a split pays two owners; only one is ours).
+    const myPkh = (await this.getKey()).pubKeyHash
+    const settle = txs.settle
+    let vout = -1
+    for (let v = 0; v < settle.outputs.length; v++) {
+      const t = readToken(settle, v)
+      if (t && hex(t.owner) === myPkh) { vout = v; break }
+    }
+    if (vout < 0) return { ok: false, reason: 'the token is not addressed to this wallet' }
     // The settle becomes the anchor of whatever this wallet does next, so the network must have it.
     let settleStatus = null
     for (const [name, tx] of Object.entries(txs)) {
@@ -184,10 +236,10 @@ export class BoltHandler {
       if (sent.status === 'rejected') return { ok: false, reason: `the network refused the ${name}: ${sent.detail ?? ''}` }
       if (name === 'settle') settleStatus = sent.status
     }
-    // Keep the token, recording everything we know about its anchor: the settle it rests on (network
-    // status + proof state against our headers) and the anchor the package descended from (provenance).
-    await this.#keep(txs.settle, 0, { kind: 'settle', network: settleStatus, provenance: anchors?.[0] ?? null })
-    return checked
+    // Keep the output that pays us, recording everything we know about its anchor: the settle it rests
+    // on (network status + proof state against our headers) and the anchor the package descended from.
+    const kept = await this.#keep(settle, vout, { kind: 'settle', network: settleStatus, provenance: anchors?.[0] ?? null })
+    return { ...checked, tokenId: kept.id }
   }
 
   // ---- internals ----
