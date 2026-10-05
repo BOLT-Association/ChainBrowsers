@@ -82,13 +82,15 @@ export async function spendCoinbase (outputs) {
   throw new Error('no usable coinbase')
 }
 
-/** Mine until Arcade reports the tx MINED with a BUMP; returns Arcade's status object. */
-export async function mineUntilMined (txid) {
-  await until('SEEN_ON_NETWORK', async () => ['SEEN_ON_NETWORK', 'SEEN_ON_MULTIPLE_NODES', 'MINED'].includes((await arcadeStatus(txid)).txStatus), { timeout: 30000 })
-  await sleep(3000)
-  for (let i = 0; i < 6; i++) {
+/** Mine until Arcade reports the tx MINED with a BUMP; returns Arcade's status object.
+ *  `settle` is the pause before the first block (the node cannot be asked whether the tx has reached
+ *  block assembly), `wait` how long a block is given to show the tx before another is mined. */
+export async function mineUntilMined (txid, { settle = 3000, wait = 30000, every = 2000, tries = 6 } = {}) {
+  await until('SEEN_ON_NETWORK', async () => ['SEEN_ON_NETWORK', 'SEEN_ON_MULTIPLE_NODES', 'MINED'].includes((await arcadeStatus(txid)).txStatus), { timeout: 30000, every: Math.min(every, 1000) })
+  await sleep(settle)
+  for (let i = 0; i < tries; i++) {
     await rpc('generate', [1]).catch(() => {})
-    const st = await until('MINED', async () => { const s = await arcadeStatus(txid); return s.txStatus === 'MINED' && s.merklePath ? s : null }, { timeout: 30000, every: 2000 }).catch(() => null)
+    const st = await until('MINED', async () => { const s = await arcadeStatus(txid); return s.txStatus === 'MINED' && s.merklePath ? s : null }, { timeout: wait, every }).catch(() => null)
     if (st) return st
   }
   throw new Error('tx never mined')

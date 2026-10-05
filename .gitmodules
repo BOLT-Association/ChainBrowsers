@@ -1,0 +1,3 @@
+[submodule "spv-testnet"]
+	path = spv-testnet
+	url = https://github.com/BOLT-Association/spv-testnet

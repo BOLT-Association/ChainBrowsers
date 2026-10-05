@@ -6,7 +6,7 @@
 #   .\start-hodos.ps1                 start (creates the scratch wallet on first run)
 #   .\start-hodos.ps1 -Stop           stop only this clone's browser, wallet and dev server
 param(
-  [string]$Scratch = "$env:TEMP\chainbrowsers-cross-wallet\hodos",
+  [string]$Scratch = "$PSScriptRoot\out\hodos",
   [string]$Arcade = 'http://localhost:8080',
   [string]$Chaintracks = 'http://localhost:8083/chaintracks/v2',
   [string]$ArcadeSse = 'http://localhost:8082',

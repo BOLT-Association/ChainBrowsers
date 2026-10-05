@@ -75,15 +75,15 @@ export function startRelay ({ port = Number(process.env.RELAY_PORT ?? 8095) } = 
       port,
       /** True once the page for `name` has polled within the last 30 s. */
       connected: name => Date.now() - role(name).seenAt < 30000,
-      /** Run a wallet method in the browser showing the page for `name`. */
-      call: (name, method, args = {}, { timeout = 120000 } = {}) => new Promise((resolve, reject) => {
+      /** Run a wallet method in the browser showing the page for `name`. `quiet`: the page does not list the call. */
+      call: (name, method, args = {}, { timeout = 120000, quiet = false } = {}) => new Promise((resolve, reject) => {
         const id = nextId++
         const timer = setTimeout(() => { pending.delete(id); reject(new Error(`${name}.${method} timed out`)) }, timeout)
         pending.set(id, {
           resolve: v => { clearTimeout(timer); resolve(v) },
           reject: e => { clearTimeout(timer); reject(e) }
         })
-        send(name, { id, kind: 'call', method, args })
+        send(name, { id, kind: 'call', method, args, quiet })
       }),
       /** Show a line on the page for `name` (kind: step | ok | fail). */
       note: (name, text, kind = 'step') => send(name, { kind: 'note', text, level: kind }),

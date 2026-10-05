@@ -1,15 +1,19 @@
 // Driving the bsv-browser app in the Android emulator with adb: open a URL in it, read the
 // screen, tap by visible text, and send it to the background and back (which is one of the
 // things that makes the app sync its header chain).
-import { execFileSync } from 'node:child_process'
+import { execFile, execFileSync } from 'node:child_process'
 import { writeFileSync } from 'node:fs'
 
 const ADB = process.env.ADB ?? 'adb'
 export const PACKAGE = process.env.BSV_PACKAGE ?? 'org.bsvassociation.browser'
 const sleep = ms => new Promise(r => setTimeout(r, ms))
 
-export const adb = (...args) => execFileSync(ADB, args, { maxBuffer: 64 * 1024 * 1024 })
+// stderr is kept out of the test's output (monkey prints its arguments there); a failure still carries it.
+export const adb = (...args) => execFileSync(ADB, args, { maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] })
 const shell = (...args) => adb('shell', ...args).toString()
+// The same without blocking the caller: reading the screen waits for the app to be idle, which can take seconds.
+const adbAsync = (...args) => new Promise((resolve, reject) =>
+  execFile(ADB, args, { maxBuffer: 64 * 1024 * 1024, encoding: 'buffer' }, (err, stdout) => err ? reject(err) : resolve(stdout)))
 
 /** Open `url` in the app (its http/https intent filter opens a browser tab). */
 export const openUrl = url => shell('am', 'start', '-a', 'android.intent.action.VIEW', '-d', `'${url}'`, PACKAGE)
@@ -25,8 +29,10 @@ export async function cycleForeground () {
 }
 
 /** Every on-screen node with text or a content description, with the centre of its bounds. */
-export function screen () {
-  const xml = adb('exec-out', 'uiautomator', 'dump', '/dev/tty').toString()
+const dumpArgs = ['exec-out', 'uiautomator', 'dump', '/dev/tty']
+export const screen = () => nodesOf(adb(...dumpArgs).toString())
+
+function nodesOf (xml) {
   const nodes = []
   for (const m of xml.matchAll(/<node [^>]*>/g)) {
     const attr = name => (m[0].match(new RegExp(` ${name}="([^"]*)"`)) ?? [])[1] ?? ''
@@ -57,15 +63,45 @@ export async function waitAndTap (pattern, { timeout = 30000 } = {}) {
   throw new Error(`nothing on screen matches ${pattern}: ${texts().slice(0, 30).join(' | ')}`)
 }
 
+let width
+const screenWidth = () => (width ??= Number((shell('wm', 'size').match(/(\d+)x\d+/) ?? [])[1] ?? 1080))
+const isToast = n => n.clickable && /^!, /.test(n.text)
+
 /**
- * Reload the app's current tab: dismiss the toast that can cover the bottom bar (in spv mode the
- * app reports that it will not fetch an exchange rate), then tap the reload button in the address bar.
+ * Close the app's error toast (in spv mode it reports, on every start and return to the
+ * foreground, that it will not fetch an exchange rate) by tapping its x. Returns its text, or null.
  */
+export function dismissToast (nodes = screen()) {
+  const toast = nodes.find(isToast)
+  if (!toast) return null
+  shell('input', 'tap', String(Math.round(screenWidth() * 0.92)), String(toast.y))
+  return toast.text
+}
+
+/** Close the toast (and answer an app-not-responding dialog) whenever it shows, for the length of a test, without holding the test up. Returns a function that stops the watcher. */
+export function watchToast ({ every = 4000 } = {}) {
+  let busy = false
+  const timer = setInterval(async () => {
+    if (busy) return
+    busy = true
+    try {
+      const nodes = nodesOf((await adbAsync(...dumpArgs)).toString())
+      // Android's "<app> isn't responding" dialog covers the app until it is answered: answer "Wait".
+      const wait = nodes.some(n => /isn't responding/.test(n.text)) && nodes.find(n => n.text === 'Wait')
+      if (wait) await adbAsync('shell', 'input', 'tap', String(wait.x), String(wait.y))
+      const toast = nodes.find(isToast)
+      if (toast) await adbAsync('shell', 'input', 'tap', String(Math.round(screenWidth() * 0.92)), String(toast.y))
+    } catch { /* the screen could not be read this time; the next tick looks again */ }
+    busy = false
+  }, every)
+  return () => clearInterval(timer)
+}
+
+/** Reload the app's current tab: close the toast that can cover the bottom bar, then tap the reload button in the address bar. */
 export async function reloadTab () {
   const nodes = screen()
-  const toast = nodes.find(n => n.clickable && /^!, /.test(n.text))
-  const width = Number((shell('wm', 'size').match(/(\d+)x\d+/) ?? [])[1] ?? 1080)
-  if (toast) { shell('input', 'tap', String(Math.round(width * 0.92)), String(toast.y)); await sleep(800) }
+  const width = screenWidth()
+  if (dismissToast(nodes)) await sleep(800)
   const bar = nodes.filter(n => n.clickable && n.text && !/^!, /.test(n.text)).sort((a, b) => b.y - a.y)[0]
   if (!bar) return false
   shell('input', 'tap', String(Math.round(width * 0.78)), String(bar.y))
