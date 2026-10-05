@@ -11,6 +11,12 @@ Test environment for BOLT / SPV work in Bitcoin-enabled browsers against a local
 - `e2e.ps1` (repo root) starts Docker, the stack, the emulator, Hodos, Metro and the app, places the two windows side by side and runs `tests/cross-wallet/run.mjs`. Teranode's chain is in `spv-testnet/stack/data` but Arcade's is in Docker volumes shared by every clone of spv-testnet; after a `reset` both test wallets must be recreated (their headers are of the old chain).
 - bsv-browser work lives on branch `spv-hardening` of the fork `BOLT-Association/bsv-browser` (default branch `master`; the fork is ahead of the user's own clone in `PeerZone\bsv-browser`, which is read-only). Its wallet core is the dependency `@bsv/expo-wallet-toolbox`, so changes are a `patch-package` patch, not app code.
 
+## Working branches (2026-10-05)
+
+- ChainBrowsers: https://github.com/BOLT-Association/ChainBrowsers/tree/cross-wallet-e2e
+- Hodos: https://github.com/BOLT-Association/Hodos-Browser/tree/arcade-provider
+- bsv-browser: https://github.com/BOLT-Association/bsv-browser/tree/spv-hardening
+
 ## Safety: running a wallet
 
 - ⛔ **Never run `hodos-wallet` without redirecting its data dir.** On Windows the data dir comes from the known-folder API, **not** the `APPDATA` variable, so overriding `APPDATA` does nothing and the process would open the real `HodosBrowserDev` DB and migrate it. Use `HODOS_DEV=1` + `HODOS_DATA_DIR=<scratch dir>` (honoured only with `HODOS_DEV=1`).
