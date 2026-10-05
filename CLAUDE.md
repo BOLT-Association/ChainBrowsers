@@ -16,6 +16,7 @@ Test environment for BOLT / SPV work in Bitcoin-enabled browsers against a local
 - ChainBrowsers: https://github.com/BOLT-Association/ChainBrowsers/tree/cross-wallet-e2e
 - Hodos: https://github.com/BOLT-Association/Hodos-Browser/tree/arcade-provider
 - bsv-browser: https://github.com/BOLT-Association/bsv-browser/tree/spv-hardening
+- Summary page, "Browser SPV Changes" (what each browser changed for spv mode through Arcade; a private Claude artifact, shared from its Share menu): https://claude.ai/artifact/PuFtyGA6wLCEzZCtN31aP3
 
 ## Safety: running a wallet
 
