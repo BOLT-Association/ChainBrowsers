@@ -58,21 +58,30 @@ settings           -- a handful of rows
 
 Dropped: `output_baskets`, `output_tags`, `output_tag_map`, `tx_labels`, `tx_labels_map`, `transaction_inputs`, `transaction_outputs`, `certificates`, `certificate_fields`, the four permission sub-tables, `cert_field_permissions`, `domain_manifest_snapshots`, `commissions`, the three `peerpay_*`, `messages`, `relay_messages`, `block_headers`, `derived_key_cache`, `monitor_events`, `sync_states`. That is ~26 tables and, with them, baskets/tags/labels/actions-metadata/certificates/peerpay as concepts.
 
-`tokens` is the only new table, and it is small:
+`tokens` is the only new table — and it must be **type-agnostic**, because BOLT is a growing family, not one token. b017 ships three types today (`SimpleMultiBOLT` fungible, `MinSimpleBOLT`, `AuthBOLT`) and its ROADMAP adds `SimpleBalanceBolt` (NFT + 8-byte balance), `AutoBOLT`, `MetaNetBOLT` and the Free/Open/Hook/Wrap family, with the explicit goal that "adding a type becomes data, not code" (a per-type descriptor: push layout + artifact + field map). A store with per-type columns would need a migration for every one of those. So the store holds the BEEF as the source of truth, plus a small generic index the recognizer fills:
 
 ```sql
 CREATE TABLE tokens (
   outpoint     TEXT PRIMARY KEY,   -- "<txid>.<vout>", the id packages/bolt already uses
-  type         TEXT NOT NULL,      -- 'MinSimpleBOLT' | 'AuthBOLT' | 'SimpleMultiBOLT'
-  issuer       TEXT NOT NULL,      -- 33-byte issuer pubkey (hex)
-  owner_pkh    TEXT NOT NULL,      -- the wallet key that holds it (hex)
+  type         TEXT NOT NULL,      -- b017 registry string; a NEW type adds a registry row, not a column
+  issuer       TEXT NOT NULL,      -- 33-byte issuer pubkey (hex) — shared by every type
+  owner_pkh    TEXT,              -- the holding key; every current type locks to a pkh (nullable for future types)
   status       TEXT NOT NULL,      -- 'held' | 'spent'
-  beef         BLOB NOT NULL,      -- Atomic BEEF: anchor + commit + settle
+  amount       TEXT,              -- fungible/balance value as a decimal string: 128-bit, so NOT an INTEGER; NULL for pure NFTs
+  attributes   TEXT,              -- JSON of the type's extra fields (e.g. AuthBOLT authOrMiscData); a new type adds keys, not columns
+  beef         BLOB NOT NULL,      -- Atomic BEEF: anchor + commit + settle — the source of truth
   created_at   INTEGER NOT NULL
 );
+CREATE INDEX idx_tokens_issuer_type ON tokens(issuer, type);  -- for per-token holdings and fungible balance
 ```
 
-That is exactly the `packages/bolt` store interface (`put`/`get`/`list`/`delete` over `{id,type,issuer,vout,beef}`), one-to-one. Funding, headers and proofs come from the money/SPV core above, which BOLT shares with BSV payments.
+Three things make this hold up as the family grows:
+
+- **`type` is a registry string, not a schema.** Recognising a new type is already how b017 works (`recognizeType` matches a `REGISTRY` entry). Adding one is a registry row in b017 plus a field-extractor in the handler; the table does not change.
+- **`amount` is TEXT.** `SimpleMultiBOLT`'s balance is 16-byte LE — up to 2^128−1 — which overflows SQLite's 64-bit INTEGER. A fungible **balance** is then `SUM(amount)` over held rows of the same `(issuer, type)`, because holdings aggregate across outputs (split/merge), unlike an NFT.
+- **`attributes` is JSON.** Type-specific fields (AuthBOLT's `authOrMiscData` now, a MetaNetBOLT MURL root later) live here, extracted by the recognizer. If one becomes a hot query, SQLite can index it with a generated column — still no table change.
+
+The `packages/bolt` store interface stays `put`/`get`/`list`/`delete`; the record generalises from `{id,type,issuer,vout,beef}` to add the recognizer-derived `owner`, `amount` and `attributes`. Funding, headers and proofs come from the money/SPV core above, shared with BSV payments.
 
 ## What this actually licenses right now
 
