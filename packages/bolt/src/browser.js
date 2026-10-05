@@ -35,8 +35,9 @@ function bridgeWallet (walletCall) {
 /**
  * Install `window.BOLT` into `target` (the page global). Returns the handler.
  * @param walletCall     `(method, endpoint, args) => Promise<any>`; defaults to window.__hodos_walletCall
- * @param arcadeUrl      Arcade's API base the handler broadcasts to (a localhost page can reach it; a
- *                       remote https page cannot — that path should proxy broadcast through the wallet)
+ * @param arcadeUrl      Arcade's API base the handler broadcasts to, fetched from the page's origin —
+ *                       so on a real site it is subject to the site's CSP and Arcade's CORS and is
+ *                       likely blocked. Broadcast should be proxied through the wallet rail (not done).
  * @param trustedIssuers issuer public keys (hex) the page's verify/receive will accept
  * @param target         where to define BOLT (default globalThis / window)
  */

@@ -57,8 +57,20 @@ Two edits in `cef-native/src/handlers/simple_render_process_handler.cpp`, mirror
 `packages/bolt/dist/BoltShimScript.h`. It is checked into the Hodos repo (not ChainBrowsers).
 
 Config: `installBolt` reads `window.__BOLT_CONFIG__` (`arcadeUrl`, `trustedIssuers`) if the browser
-sets it before injection, defaulting `arcadeUrl` to `http://localhost:8080` so a localhost test page
-works unwired.
+sets it before injection, defaulting `arcadeUrl` to `http://localhost:8080`.
+
+⚠️ **The injection gate is `https://` main frames only** (it shares the CWI gate), so an
+`http://localhost` test page does **not** get `window.BOLT` auto-injected. To exercise the shim on a
+localhost page, load `dist/bolt-shim.js` with a `<script>` tag and call `BoltShim.installBolt(...)`
+yourself.
+
+⚠️ **Broadcast is a direct page `fetch` to Arcade.** `brc100Core`'s `arcadeBroadcaster` runs in the
+page, so every op that touches the network — `mint`, `transfer`, `pay`, `receive`, and `verify` (which
+broadcasts the anchor) — fetches `arcadeUrl` from the page's origin. On a real https site that is
+subject to the site's CSP `connect-src` and to Arcade's CORS headers (not confirmed), so it is likely
+to be blocked. Only `getKey`, `list` and `present` avoid Arcade. **To make the money-moving methods
+work from a real page, broadcast must be proxied through the wallet rail** — a Rust endpoint (or a
+ride on an existing one), which model A was chosen to avoid. This is the main open gap.
 
 ## Status / verified
 
@@ -72,9 +84,18 @@ works unwired.
 
 ## Known costs / risks
 
+- **The network-touching methods are not usable from a real page yet** (see the broadcast warning
+  above): without a wallet-side broadcast proxy, `window.BOLT` on an https site can do `getKey`,
+  `list` and `present`, not `mint`/`transfer`/`pay`/`receive`/`verify`.
 - **~420 KB injected into every qualifying https main frame** on `OnContextCreated` (parse cost per
   page load). A follow-up could inject a small loader and evaluate the bundle lazily on first
   `window.BOLT` use, or gate injection to opted-in origins.
+- **Every fungible transfer/split now costs a `createAction`.** The wallet-funded rail (chosen so a
+  received split piece re-spends) replaced the old self-funding chain, which re-used the token's own
+  change and made follow-on transfers free. Each fungible op now mints a funding output through the
+  wallet — on Hodos that is an extra transaction *and* the wallet's 1000-sat service fee per op. A
+  hybrid (self-fund when the token's change pays this key, wallet-fund only otherwise) would keep the
+  free path and still fix split pieces.
 - **`createSignature` with `hashToDirectlySign` from an external domain**: the handler signs token
   covenant digests through this call. Whether the wallet's domain gating admits it from a real external
   https origin (as opposed to a localhost test page) is unverified; if it is refused, token *signing*
