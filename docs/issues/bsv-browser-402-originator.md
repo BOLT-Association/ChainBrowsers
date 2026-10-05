@@ -1,6 +1,17 @@
 # bsv-browser: a page can make the wallet pay as another site (HTTP 402 handler)
 
-Status: found by reading code, 2026-10-05. **Not reproduced on a device, not reported upstream.**
+Status: 2026-10-05. **Handler half reproduced** by a contained PoC (jest, stub wallet, no network, no funds): `poc/bsvPayment402Originator.poc.test.ts`. The dispatch-ordering half is from code reading. **Not reported upstream.**
+
+## Reproduction
+
+`docs/issues/poc/bsvPayment402Originator.poc.test.ts` runs the real `BsvPaymentHandler` with a stub wallet that records the originator it is called with. Drop it into `browsers/bsv-browser/__tests__/` and `npx jest __tests__/bsvPayment402Originator.poc.test.ts` (kept out of the shared fork clone's git on purpose). It passes, showing that for page-supplied `url` and headers the handler:
+
+- attributes every wallet call to `new URL(url).hostname` (`victim.example`), never to the page that sent the message;
+- applies no amount cap (999,999 sat passes straight through);
+- binds the payment output to the page-supplied payee key (`counterparty` = `x-bsv-server`);
+- sends the spend's nonce only to the page-named URL.
+
+What the PoC does **not** show, and is left to the code trace: that a page can post `PAYMENT_REQUIRED` (the injected `fetch` at `injectedPolyfills.ts:792`, plus any script can `postMessage`), that the app handles it before the origin check (`app/index.tsx:1322` vs `:1377`), and whether a real spend completes with **no** user prompt — that depends on the permissions manager's spending-authorization and auto-approve, which the stub wallet replaced. So the PoC confirms the attribution-and-amount core; the unprompted-spend tier in the severity table rests on the toolbox read, not on this PoC.
 
 | | |
 |---|---|
@@ -101,7 +112,7 @@ For comparison, with Scope read as Unchanged the same vector scores 6.5.
 
 ## Not checked
 
-- Nothing was run. The path was read end to end in the app; the spending-token and group-permission behaviour inside the toolbox bundle comes from a first-pass read.
+- The handler path is now exercised by the PoC (stub wallet). The end-to-end spend on a device, and the spending-token / auto-approve behaviour inside the toolbox bundle, are still from reading, not a run.
 - Whether a site normally ends up holding a persistent spending authorization in this app. The auto-approve grants are ephemeral (`WalletContext.tsx:1121`); a grant from the prompt was not traced.
 - Whether payment headers survive a cross-origin redirect.
 - How `createAction` treats a non-numeric or negative amount from `parseInt`.
