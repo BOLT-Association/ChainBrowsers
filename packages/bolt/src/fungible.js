@@ -7,8 +7,21 @@
 // A held token is reconstructed from its stored BEEF: the class needs the tail of the lineage (the
 // settle the token rests on, the commit before it, and the settle/mint that anchors them), which the
 // package always carries. The grandparent a next settle rebuilds is that commit, present in the package.
+//
+// Funding is the wallet's ordinary p2pkh fund/change rail (the same `core.fund` the NFT path uses): a
+// fresh wallet output funds the commit, and the commit's change returns to the wallet; the settle then
+// self-funds from that commit change. A token is spent without relying on it carrying its own change —
+// so a received split *piece* (which has no change of its own) spends like any other token.
 import { Hash } from '@bsv/sdk'
-import { SimpleMultiBOLT, recognizeType } from 'b017'
+import { SimpleMultiBOLT, p2pkhUnlock, recognizeType } from 'b017'
+
+/** A wallet funding output ({tx, vout} from core.fund) as a b017 transaction input the signer unlocks. */
+const fundingInput = (fund, signer) => ({
+  sourceTransaction: fund.tx,
+  sourceOutputIndex: fund.vout,
+  unlockingScriptTemplate: p2pkhUnlock(signer),
+  sequence: 0xffffffff
+})
 
 /** Decimal string -> 16-byte little-endian balance (128-bit, wrapping). */
 export const amountToLE = (dec) => {
@@ -52,19 +65,22 @@ export function reconstructFungible (subjectTx, signer, vout = 0) {
   return t
 }
 
-/** Transfer the whole fungible token to `toPubKey` (33-byte compressed). Self-funds from the token's
+/** Transfer the whole fungible token to `toPubKey` (33-byte compressed), funded by the wallet output
+ *  `fund` ({tx, vout} from core.fund): it funds the commit, the settle self-funds from the commit's
  *  change. Mutates `t` to the new settled state and returns the built commit and settle (unbroadcast). */
-export async function transferFungible (t, toPubKey) {
-  await t.transfer(toPubKey)
+export async function transferFungible (t, toPubKey, fund) {
+  await t.commit(toPubKey, undefined, false, fundingInput(fund, t.signer))
+  await t.settle(toPubKey)
   const n = t.prevTxs.length
   return { commit: t.prevTxs[n - 2], settle: t.prevTxs[n - 1] }
 }
 
-/** Split `t`, paying `amount` to `recipientPubKey` and keeping the remainder to `selfPubKey`. The split
- *  settle carries the remainder at vout 0 and the paid piece at vout 1. Returns the built commit/settle.
- *  b017's split needs a grandparent, so `t` must have been transferred at least once (lineage ≥ 3). */
-export async function splitFungible (t, selfPubKey, recipientPubKey, amount) {
-  const [main] = await t.split(selfPubKey, recipientPubKey, amountToLE(amount))
+/** Split `t`, paying `amount` to `recipientPubKey` and keeping the remainder to `selfPubKey`, funded by
+ *  the wallet output `fund` ({tx, vout} from core.fund). The split settle carries the remainder at vout 0
+ *  and the paid piece at vout 1. Returns the built commit/settle. b017's split needs a grandparent, so
+ *  `t` must have been transferred at least once (lineage ≥ 3). */
+export async function splitFungible (t, selfPubKey, recipientPubKey, amount, fund) {
+  const [main] = await t.split(selfPubKey, recipientPubKey, amountToLE(amount), { tx: fund.tx, vout: fund.vout, key: t.signer })
   const n = main.prevTxs.length
   return { commit: main.prevTxs[n - 2], settle: main.prevTxs[n - 1] }
 }
