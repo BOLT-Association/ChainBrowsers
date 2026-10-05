@@ -1,4 +1,4 @@
-# bsv-browser: a page can make the wallet pay as another site (HTTP 402 handler)
+# bsv-browser: a web page can make the wallet spend without the user's consent (HTTP 402 handler)
 
 Status: 2026-10-05. **Handler half reproduced** by a contained PoC (jest, stub wallet, no network, no funds): `poc/bsvPayment402Originator.poc.test.ts`. The dispatch-ordering half is from code reading. **Not reported upstream.**
 

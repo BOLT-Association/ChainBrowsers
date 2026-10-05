@@ -16,7 +16,7 @@ maintainers to know (the fork ships it too), tell them privately in parallel.
 
 ---
 
-**Title:** A web page can make the wallet pay as another site (HTTP 402 handler trusts page-supplied origin, amount and payee)
+**Title:** A malicious web page can make the wallet spend funds without the user's consent (402 handler trusts page-controlled URL, amount, and payee)
 
 **Severity:** High (CVSS 3.1 7.4, `AV:N/AC:L/PR:N/UI:R/S:C/C:N/I:H/A:N`)
 
