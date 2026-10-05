@@ -9,7 +9,7 @@
 import { Hash, P2PKH, Utils } from '@bsv/sdk'
 import { AUTH_DATA_MAX_BYTES, fromBeef, toAtomicBeef, verifyAndBroadcast } from 'b017'
 import { NFT_TYPES, buildCommit, buildMint, buildSettle, indexFields, readToken } from './nft.js'
-import { mintFungible, reconstructFungible, splitFungible, transferFungible } from './fungible.js'
+import { mintFungible, reconstructFungible, selfFundable, splitFungible, transferFungible } from './fungible.js'
 import { signWith, sizeOf, walletSigner } from './signer.js'
 
 const hex = (bytes) => Utils.toHex(bytes)
@@ -101,7 +101,7 @@ export class BoltHandler {
     if (toPubKey.length !== 33) throw new Error('a SimpleMultiBOLT transfer needs the recipient 33-byte public key')
     const signer = await walletSigner(this.core, this.keyId)
     const t = reconstructFungible(token.tx, signer, token.vout)
-    const { commit, settle } = await transferFungible(t, toPubKey, await this.#fund(signer, fundSats))
+    const { commit, settle } = await transferFungible(t, toPubKey, await this.#fundingFor(t, signer, fundSats))
     await this.#send(commit, 'commit')
     await this.#send(settle, 'settle')
     await this.core.store.delete(id)
@@ -111,8 +111,9 @@ export class BoltHandler {
   /**
    * Pay `amount` of a fungible token (issuer's compressed pubkey, hex) to `to` (recipient 33-byte
    * pubkey): splits a held token, keeping the remainder, and returns the package for the recipient's
-   * piece. An exact amount transfers the whole token. Every leg is funded from the wallet's p2pkh
-   * fund/change rail, so a received split piece (no change of its own) is re-spendable like any token.
+   * piece. An exact amount transfers the whole token. A token the wallet owns funds each leg from its
+   * own change; only a received split piece (no change of its own) draws a fresh output from the
+   * wallet's p2pkh fund/change rail, and after that its remainder self-funds again.
    * @returns `{ package }`
    */
   async pay (issuer, amount, to) {
@@ -130,7 +131,7 @@ export class BoltHandler {
     let t = reconstructFungible(token.tx, signer, token.vout)
 
     if (BigInt(cand.amount) === want) {
-      const { commit, settle } = await transferFungible(t, toPubKey, await this.#fund(signer))
+      const { commit, settle } = await transferFungible(t, toPubKey, await this.#fundingFor(t, signer))
       await this.#send(commit, 'commit'); await this.#send(settle, 'settle')
       await this.core.store.delete(cand.id)
       return { package: [commit, settle].map((tx) => hex(toAtomicBeef(tx))) }
@@ -138,10 +139,11 @@ export class BoltHandler {
 
     // split needs a grandparent; a genesis / single-hop token gets a self-transfer first to build one.
     if (t.prevTxs.length < 3) {
-      const self = await transferFungible(t, signer.publicKey, await this.#fund(signer))
+      const self = await transferFungible(t, signer.publicKey, await this.#fundingFor(t, signer))
       await this.#send(self.commit, 'self-commit'); await this.#send(self.settle, 'self-settle')
     }
-    const { commit, settle } = await splitFungible(t, signer.publicKey, toPubKey, amount, await this.#fund(signer))
+    // after a transfer (own or self) the settle's change pays this key, so the split self-funds
+    const { commit, settle } = await splitFungible(t, signer.publicKey, toPubKey, amount, await this.#fundingFor(t, signer))
     await this.#send(commit, 'commit')
     const settleStatus = await this.#send(settle, 'settle')
     await this.core.store.delete(cand.id)
@@ -244,9 +246,11 @@ export class BoltHandler {
 
   // ---- internals ----
 
-  /** A fresh wallet p2pkh output to fund a fungible commit; the op's change returns to this key. The
-   *  wallet's ordinary fund/change rail — so a split piece (no change of its own) spends like any token. */
-  async #fund (signer, sats = 1000) {
+  /** Funding for a fungible op on `t`: nothing when the token funds itself from its own change (the
+   *  usual case, free), else a fresh wallet p2pkh output — the ordinary fund/change rail — which is
+   *  what lets a received split piece (no change of its own) spend like any token. */
+  async #fundingFor (t, signer, sats = 1000) {
+    if (selfFundable(t)) return undefined
     return this.core.fund(new P2PKH().lock(Hash.hash160(signer.publicKey)), sats)
   }
 

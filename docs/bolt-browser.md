@@ -90,12 +90,10 @@ ride on an existing one), which model A was chosen to avoid. This is the main op
 - **~420 KB injected into every qualifying https main frame** on `OnContextCreated` (parse cost per
   page load). A follow-up could inject a small loader and evaluate the bundle lazily on first
   `window.BOLT` use, or gate injection to opted-in origins.
-- **Every fungible transfer/split now costs a `createAction`.** The wallet-funded rail (chosen so a
-  received split piece re-spends) replaced the old self-funding chain, which re-used the token's own
-  change and made follow-on transfers free. Each fungible op now mints a funding output through the
-  wallet — on Hodos that is an extra transaction *and* the wallet's 1000-sat service fee per op. A
-  hybrid (self-fund when the token's change pays this key, wallet-fund only otherwise) would keep the
-  free path and still fix split pieces.
+- **Fungible funding is hybrid** (`selfFundable` in `fungible.js`): a token the wallet owns funds its
+  own transfer/split from its change (free — no `createAction`, no Hodos service fee); only a received
+  split *piece*, which carries no change, draws one fresh output from the wallet rail, after which its
+  remainder self-funds again. Pinned by the `createAction`-counting tests in `test/fungible.test.mjs`.
 - **`createSignature` with `hashToDirectlySign` from an external domain**: the handler signs token
   covenant digests through this call. Whether the wallet's domain gating admits it from a real external
   https origin (as opposed to a localhost test page) is unverified; if it is refused, token *signing*

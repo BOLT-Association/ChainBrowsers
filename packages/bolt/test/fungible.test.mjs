@@ -175,6 +175,45 @@ test('re-spend a received split piece whole: transfer it onward', async () => {
   assert.deepEqual(await user.handler.list(), [])
 })
 
+const createActions = (w) => w.calls.filter((m) => m === 'createAction').length
+
+test('a token the wallet owns funds its own transfers and pays: no createAction beyond the mint', async () => {
+  const chain = pretendChain()
+  const issuer = walletOn(chain)
+  const issuerKey = (await issuer.handler.getKey()).publicKey
+  const user = walletOn(chain, { trustedIssuers: [issuerKey] })
+  await issuer.handler.mint({ type: 'SimpleMultiBOLT', amount: '1000' })
+  assert.equal(createActions(issuer), 1) // the mint's funding
+
+  // pay: self-transfer (genesis) + split, both from the token's own change
+  await issuer.handler.pay(issuerKey, '300', (await user.handler.getKey()).publicKey)
+  assert.equal(createActions(issuer), 1)
+  // and again from the remainder
+  await issuer.handler.pay(issuerKey, '200', (await user.handler.getKey()).publicKey)
+  assert.equal(createActions(issuer), 1)
+  assert.equal(await issuer.handler.balance(issuerKey), '500')
+})
+
+test('a received split piece is wallet-funded once; its remainder self-funds after', async () => {
+  const chain = pretendChain()
+  const issuer = walletOn(chain)
+  const issuerKey = (await issuer.handler.getKey()).publicKey
+  const user = walletOn(chain, { trustedIssuers: [issuerKey] })
+  const merchant = walletOn(chain, { trustedIssuers: [issuerKey] })
+  await issuer.handler.mint({ type: 'SimpleMultiBOLT', amount: '1000' })
+  const p1 = (await issuer.handler.pay(issuerKey, '400', (await user.handler.getKey()).publicKey)).package
+  assert.equal((await user.handler.receive(p1)).ok, true)
+  assert.equal(createActions(user), 0)
+
+  // the piece carries no change of its own: one wallet funding for its first spend
+  await user.handler.pay(issuerKey, '150', (await merchant.handler.getKey()).publicKey)
+  assert.equal(createActions(user), 1)
+  // the remainder (vout 0 of the user's own split) carries change again: free
+  await user.handler.pay(issuerKey, '100', (await merchant.handler.getKey()).publicKey)
+  assert.equal(createActions(user), 1)
+  assert.equal(await user.handler.balance(issuerKey), '150')
+})
+
 test('pay more than any single token holds is refused', async () => {
   const chain = pretendChain()
   const issuer = walletOn(chain)
