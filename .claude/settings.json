@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(go vet *)",
+      "Bash(gofmt -l *)",
+      "Bash(git grep *)",
+      "Bash(git rev-list *)",
+      "Bash(git check-ignore *)",
+      "Bash(adb devices)",
+      "Bash(docker info *)",
+      "Bash(docker info)",
+      "Bash(npm audit)",
+      "Bash(npm view *)",
+      "Bash(tasklist)",
+      "Bash(node --test)",
+      "Bash(node live/hodos.live.mjs)",
+      "mcp__claude-in-chrome__tabs_context_mcp"
+    ]
+  }
+}
