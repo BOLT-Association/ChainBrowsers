@@ -9,7 +9,8 @@
 import { Hash, P2PKH, Utils } from '@bsv/sdk'
 import { AUTH_DATA_MAX_BYTES, fromBeef, toAtomicBeef, verifyAndBroadcast } from 'b017'
 import { NFT_TYPES, buildCommit, buildMint, buildSettle, indexFields, readToken } from './nft.js'
-import { signWith, sizeOf } from './signer.js'
+import { mintFungible, reconstructFungible, transferFungible } from './fungible.js'
+import { signWith, sizeOf, walletSigner } from './signer.js'
 
 const hex = (bytes) => Utils.toHex(bytes)
 const bytesOf = (x) => (typeof x === 'string' ? Utils.toArray(x, 'hex') : Array.from(x ?? []))
@@ -35,14 +36,28 @@ export class BoltHandler {
     return { publicKey: hex(publicKey), pubKeyHash: hex(Hash.hash160(publicKey)) }
   }
 
-  /** Tokens held. */
+  /** Tokens held. Fungible rows carry their `amount`. */
   async list () {
-    return (await this.core.store.list()).map(({ id, type, issuer }) => ({ id, type, issuer }))
+    return (await this.core.store.list()).map(({ id, type, issuer, amount }) =>
+      ({ id, type, issuer, ...(amount != null ? { amount } : {}) }))
   }
 
-  /** Mint a token as its issuer (the wallet's key becomes the issuer key) and broadcast it. */
-  async mint ({ type = 'AuthBOLT', fundSats = 1000 } = {}) {
-    if (!NFT_TYPES.includes(type)) throw new Error(`cannot mint ${type}: supported types are ${NFT_TYPES.join(', ')}`)
+  /** The fungible balance of one token: the sum of held outputs of that (issuer, type), as a string. */
+  async balance (issuer, type = 'SimpleMultiBOLT') {
+    const iss = issuer.toLowerCase()
+    if (this.core.store.balance) return this.core.store.balance(iss, type)
+    let sum = 0n
+    for (const r of await this.core.store.list()) {
+      if (r.issuer === iss && r.type === type && r.amount != null) sum += BigInt(r.amount)
+    }
+    return sum.toString()
+  }
+
+  /** Mint a token as its issuer (the wallet's key becomes the issuer key) and broadcast it. A fungible
+   *  mint (SimpleMultiBOLT) takes an `amount`; the NFT family does not. */
+  async mint ({ type = 'AuthBOLT', fundSats = 1000, amount } = {}) {
+    if (type === 'SimpleMultiBOLT') return this.#mintFungible({ amount, fundSats })
+    if (!NFT_TYPES.includes(type)) throw new Error(`cannot mint ${type}: supported types are ${NFT_TYPES.join(', ')}, SimpleMultiBOLT`)
     const issuerPubKey = await this.core.publicKey(this.keyId)
     const issuerPkh = Hash.hash160(issuerPubKey)
     const fund = await this.core.fund(new P2PKH().lock(issuerPkh), fundSats)
@@ -51,18 +66,42 @@ export class BoltHandler {
     return this.#keep(tx, 0, { kind: 'mint', network, provenance: null })
   }
 
+  async #mintFungible ({ amount, fundSats }) {
+    if (amount === undefined || amount === null) throw new Error('minting a SimpleMultiBOLT requires an amount')
+    const signer = await walletSigner(this.core, this.keyId)
+    const fund = await this.core.fund(new P2PKH().lock(Hash.hash160(signer.publicKey)), fundSats)
+    const t = await mintFungible({ signer, fund, amount })
+    const network = await this.#send(t.tx, 'mint')
+    return this.#keep(t.tx, 0, { kind: 'mint', network, provenance: null })
+  }
+
   /**
-   * Transfer a held token to `toPubKeyHash`: a funded commit and settle, both broadcast.
+   * Transfer a held token, a funded commit and settle, both broadcast.
+   * @param to  NFT family: the recipient's 20-byte pubKeyHash. SimpleMultiBOLT: the recipient's
+   *            33-byte compressed public key (the covenant derives the hash itself).
    * @returns `{ package }` for the recipient's `receive`
    */
-  async transfer (id, toPubKeyHash, { fundSats = 1000 } = {}) {
+  async transfer (id, to, { fundSats = 1000 } = {}) {
     const token = await this.#held(id)
-    const toPkh = bytesOf(toPubKeyHash)
-    if (toPkh.length !== 20) throw new Error('toPubKeyHash must be 20 bytes')
+    if (token.type === 'SimpleMultiBOLT') return this.#transferFungible(id, token, to)
+    const toPkh = bytesOf(to)
+    if (toPkh.length !== 20) throw new Error('an NFT transfer needs the recipient 20-byte pubKeyHash')
     const fund = await this.core.fund(new P2PKH().lock(token.owner), fundSats)
     const commit = await this.#sign((key, fee) => buildCommit({ token, key, toPkh, fund, fee }))
     const change = { tx: commit, vout: commit.outputs.length - 1 }
     const settle = await this.#sign((key, fee) => buildSettle({ token, commit, key, toPkh, fund: change, fee }))
+    await this.#send(commit, 'commit')
+    await this.#send(settle, 'settle')
+    await this.core.store.delete(id)
+    return { package: [commit, settle].map((tx) => hex(toAtomicBeef(tx))) }
+  }
+
+  async #transferFungible (id, token, to) {
+    const toPubKey = bytesOf(to)
+    if (toPubKey.length !== 33) throw new Error('a SimpleMultiBOLT transfer needs the recipient 33-byte public key')
+    const signer = await walletSigner(this.core, this.keyId)
+    const t = reconstructFungible(token.tx, signer)
+    const { commit, settle } = await transferFungible(t, toPubKey)
     await this.#send(commit, 'commit')
     await this.#send(settle, 'settle')
     await this.core.store.delete(id)

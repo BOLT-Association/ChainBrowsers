@@ -3,64 +3,13 @@
 // funding, headers and a broadcaster that refuses what a node would refuse.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { Hash, MerklePath, PrivateKey, ProtoWallet, Script, Transaction, UnlockingScript, Utils } from '@bsv/sdk'
-import { fromBeef, toAtomicBeef, verifyTx } from 'b017'
+import { Hash, PrivateKey, Script, Transaction, UnlockingScript, Utils } from '@bsv/sdk'
+import { fromBeef, toAtomicBeef } from 'b017'
 import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { BoltHandler, brc100Core, dispatcher, memoryStore, nodeSqliteStore, pageClient } from '../src/index.js'
-
-function pretendChain () {
-  const headers = new Map() // height -> 80-byte header hex
-  const seen = new Set()
-  const sent = []
-  let height = 100
-  /** A mined tx paying `script`: a one-tx block whose merkle root is the txid. */
-  const mine = (script, satoshis) => {
-    const tx = new Transaction(1, [], [{ satoshis, lockingScript: script }], ++height)
-    const txid = tx.id('hex')
-    tx.merklePath = new MerklePath(height, [[{ offset: 0, hash: txid, txid: true }]])
-    const header = new Array(80).fill(0)
-    header.splice(36, 32, ...Utils.toArray(txid, 'hex').reverse())
-    headers.set(height, Utils.toHex(header))
-    seen.add(txid)
-    return tx
-  }
-  const broadcast = async (tx) => {
-    const txid = tx.id('hex')
-    sent.push(txid)
-    if (seen.has(txid)) return { status: 'already-seen' }
-    let inSats = 0
-    for (const input of tx.inputs) {
-      const source = input.sourceTransaction
-      if (!source || !seen.has(source.id('hex'))) return { status: 'rejected', detail: 'missing inputs' }
-      inSats += source.outputs[input.sourceOutputIndex].satoshis
-    }
-    const outSats = tx.outputs.reduce((sum, o) => sum + o.satoshis, 0)
-    if (outSats > inSats) return { status: 'rejected', detail: 'creates value' }
-    try { if (!verifyTx(tx, true).valid) return { status: 'rejected', detail: 'script' } } catch (e) { return { status: 'rejected', detail: 'script' } }
-    seen.add(txid)
-    return { status: 'accepted' }
-  }
-  return { headers, seen, sent, mine, broadcast }
-}
-
-function walletOn (chain, { store = memoryStore(), ...opts } = {}) {
-  const proto = new ProtoWallet(PrivateKey.fromRandom())
-  const calls = []
-  const wallet = {
-    getPublicKey: (args) => { calls.push('getPublicKey'); return proto.getPublicKey(args) },
-    createSignature: (args) => { calls.push('createSignature'); return proto.createSignature(args) },
-    getHeaderForHeight: async ({ height }) => { calls.push('getHeaderForHeight'); return { header: chain.headers.get(height) } },
-    createAction: async ({ outputs }) => {
-      calls.push('createAction')
-      const tx = chain.mine(Script.fromHex(outputs[0].lockingScript), outputs[0].satoshis)
-      return { txid: tx.id('hex'), tx: tx.toAtomicBEEF() }
-    }
-  }
-  const handler = new BoltHandler({ core: brc100Core({ wallet, broadcast: chain.broadcast, store }), ...opts })
-  return { handler, calls, store }
-}
+import { dispatcher, nodeSqliteStore, pageClient } from '../src/index.js'
+import { pretendChain, walletOn } from './harness.mjs'
 
 async function issued (type = 'AuthBOLT') {
   const chain = pretendChain()
@@ -166,7 +115,7 @@ test('limits: data over 75 bytes, an unknown token, an unheld type', async () =>
   const { user, tokenId } = await issued()
   await assert.rejects(user.handler.present(tokenId, { data: 'ab'.repeat(76) }), /maximum is 75/)
   await assert.rejects(user.handler.present('00'.repeat(32) + '.0', {}), /no token/)
-  await assert.rejects(user.handler.mint({ type: 'SimpleMultiBOLT' }), /supported types/)
+  await assert.rejects(user.handler.mint({ type: 'NopeBOLT' }), /supported types/)
 })
 
 test('a page reaches the handler through the dispatcher, and the user is asked before anything is signed', async () => {

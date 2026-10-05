@@ -44,6 +44,6 @@ node live/hodos.live.mjs
 ## Not done
 
 - **Browser wiring.** Neither browser injects `window.BOLT` yet. The live test drives Hodos through its BRC-100 HTTP interface from Node.
-- **Fungible tokens.** `SimpleMultiBOLT` (split, merge) is not handled; b017's class for it holds a private key.
+- **Fungible tokens.** `SimpleMultiBOLT` mint / whole-token transfer / receive / balance are handled (`src/fungible.js`), driving b017's token class with a wallet `Signer` (the `async-signer` branch). A held token is reconstructed from its stored BEEF to transfer onward. **Partial-amount payments (split) and merge are not handled yet** — a fungible transfer moves the whole token; to send part of a balance you need split.
 - **Backup.** A durable, type-agnostic store exists (`sqlStore` over a SQL adapter; `nodeSqliteStore` for Node; `memoryStore` for tests), keeping the BEEF plus the full anchor (its tx, kind, network status, proof state, and the provenance anchor). A held token's package is still the only copy of an off-chain event, so a browser must also back it up. The proof-refresh loop (`setAnchorProof` on a later poll/reorg) is a hook, not yet wired.
 - **Proof upkeep.** A held token's BEEF keeps its unmined ancestors; nothing replaces them with merkle paths once they are mined.

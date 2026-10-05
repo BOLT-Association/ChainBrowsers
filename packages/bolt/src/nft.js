@@ -31,11 +31,36 @@ const unlock = (type, key, beneficiary, prevTxs, auth) =>
 const field = (lock, i) => lock.chunks[i]?.data ?? []
 const isZero = (bytes) => bytes.every((b) => b === 0)
 
-/** Read the token at `tx:vout`, or null when that output is not an NFT-family token. */
+// SimpleMultiBOLT lock layout: balance[0] balanceCommit[1] pubKeyHash[2] … otherGrandparent[5]
+// txoType[6] outputIndexN[7] parent[8] grandparent[9] issuer[10].
+const SMB = { OWNER: 2, PARENT: 8, AMOUNT: 0 }
+
+/** 16-byte little-endian balance -> decimal string (128-bit, so BigInt not Number). */
+const leToDecimal = (bytes) => {
+  let n = 0n
+  for (let i = bytes.length - 1; i >= 0; i--) n = (n << 8n) | BigInt(bytes[i] ?? 0)
+  return n.toString()
+}
+
+/** Read the token at `tx:vout` (any recognised b017 type), or null. Fungible tokens carry an `amount`. */
 export function readToken (tx, vout = 0) {
   const lock = tx.outputs[vout]?.lockingScript
   const type = lock && recognizeType(lock)
-  if (!type || !NFT_TYPES.includes(type)) return null
+  if (!type) return null
+  if (type === 'SimpleMultiBOLT') {
+    return {
+      type,
+      tx,
+      vout,
+      owner: field(lock, SMB.OWNER),
+      parent: field(lock, SMB.PARENT),
+      issuer: issuerPubKeyOf(lock, type),
+      amount: leToDecimal(field(lock, SMB.AMOUNT)),
+      attributes: {},
+      isMint: isZero(field(lock, SMB.PARENT))
+    }
+  }
+  if (!NFT_TYPES.includes(type)) return null
   return {
     type,
     tx,

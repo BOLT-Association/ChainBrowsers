@@ -56,3 +56,17 @@ export async function sizeOf (core, keyId, build) {
   await tx.sign()
   return tx.toBinary().length + signatures * 64
 }
+
+/**
+ * A b017 Signer backed by the wallet, for the now-async token classes (SimpleMultiBOLT) and templates:
+ * `{ publicKey, sign(msg) }` where sign returns a low-S ECDSA Signature over sha256(msg), the same
+ * thing PrivateKey.sign does. b017 awaits it, so the wallet signs in a single pass — no two-pass build.
+ * The public key is fetched once up front because b017 reads `publicKey` synchronously.
+ */
+export async function walletSigner (core, keyId) {
+  const publicKey = await core.publicKey(keyId)
+  return {
+    publicKey,
+    sign: async (msg) => lowS(Signature.fromDER(await core.signDigest(keyId, Hash.sha256(msg))))
+  }
+}
