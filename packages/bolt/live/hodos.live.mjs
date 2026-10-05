@@ -8,8 +8,11 @@
 //
 //   node live/hodos.live.mjs        (stack up, wallet on :31401; see docs/hodos-spv.md)
 import assert from 'node:assert/strict'
+import { mkdtempSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { Hash, PrivateKey, ProtoWallet, Utils } from '@bsv/sdk'
-import { BoltHandler, brc100Core } from '../src/index.js'
+import { BoltHandler, brc100Core, nodeSqliteStore } from '../src/index.js'
 
 const WALLET = process.env.WALLET_URL ?? 'http://127.0.0.1:31401'
 const ARCADE = process.env.ARCADE_URL ?? 'http://localhost:8080'
@@ -40,7 +43,11 @@ const keyOnly = () => {
 const issuer = new BoltHandler({ core: brc100Core({ wallet: hodos, arcadeUrl: ARCADE }) })
 const issuerKey = (await issuer.getKey()).publicKey
 step(`issuer key from Hodos ${issuerKey.slice(0, 16)}…`)
-const user = new BoltHandler({ core: brc100Core({ wallet: keyOnly(), arcadeUrl: ARCADE }), trustedIssuers: [issuerKey] })
+// The user keeps tokens in a real on-disk SQLite store (a file), so persistence is exercised against
+// live Arcade BEEFs, not only the headless pretend chain.
+const userDb = join(mkdtempSync(join(tmpdir(), 'bolt-live-')), 'tokens.db')
+const userStore = nodeSqliteStore(userDb)
+const user = new BoltHandler({ core: brc100Core({ wallet: keyOnly(), arcadeUrl: ARCADE, store: userStore }), trustedIssuers: [issuerKey] })
 const site = new BoltHandler({ core: brc100Core({ wallet: keyOnly(), arcadeUrl: ARCADE }), trustedIssuers: [issuerKey] })
 
 const minted = await issuer.mint({ type: 'AuthBOLT' })
@@ -52,6 +59,21 @@ step(`Hodos transferred it: commit and settle on the network (${Math.round(pkg.j
 const got = await user.receive(pkg)
 assert.equal(got.ok, true, got.reason)
 step(`the user verified and kept ${got.tokenId.slice(0, 16)}…`)
+
+// Everything we know about the anchor was stored, with a real network status from Arcade.
+const rec = await userStore.get(got.tokenId)
+assert.equal(rec.anchor.kind, 'settle')
+assert.ok(['accepted', 'already-seen'].includes(rec.anchor.network), rec.anchor.network)
+assert.equal(rec.provenance.kind, 'mint')
+step(`anchor stored: kind=${rec.anchor.kind} network=${rec.anchor.network} proven=${rec.anchor.proven} provenance=${rec.provenance.kind}`)
+
+// A second connection to the same SQLite file sees the committed token (the live store stays open for
+// the presentation below).
+const reopened = nodeSqliteStore(userDb)
+const back = await reopened.get(got.tokenId)
+assert.ok(back && back.type === 'AuthBOLT' && back.issuer === issuerKey, 'token readable from a second connection')
+reopened.close()
+step('token persisted to SQLite (read back on a fresh connection)')
 
 const challenge = Utils.toHex(Hash.sha256(Utils.toArray(`login ${Date.now()}`, 'utf8')))
 const shown = await site.verify((await user.present(got.tokenId, { data: challenge })).package)
