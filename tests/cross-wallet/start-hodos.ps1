@@ -10,6 +10,8 @@ param(
   [string]$Arcade = 'http://localhost:8080',
   [string]$Chaintracks = 'http://localhost:8083/chaintracks/v2',
   [string]$ArcadeSse = 'http://localhost:8082',
+  # Extra switches for the browser (Chromium's), e.g. to map a test hostname to this machine.
+  [string[]]$BrowserArgs = @(),
   [switch]$Stop
 )
 $ErrorActionPreference = 'Stop'
@@ -62,7 +64,7 @@ if (-not (& $listening 5137)) {
 
 if (-not (& $listening 9322)) {
   $env:APPDATA = "$Scratch\appdata"
-  Start-Process -FilePath $browserExe
+  if ($BrowserArgs.Count) { Start-Process -FilePath $browserExe -ArgumentList $BrowserArgs } else { Start-Process -FilePath $browserExe }
   Wait-Port 9322 'the browser (DevTools port)'
 }
 "Hodos is up in spv mode: wallet 127.0.0.1:31401 (Arcade $Arcade), DevTools 127.0.0.1:9322, data under $Scratch"

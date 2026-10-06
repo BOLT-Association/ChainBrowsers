@@ -1,105 +1,113 @@
 # `window.BOLT` in the browser
 
-The page-facing BOLT interface — `packages/bolt` — can run in a web page as `window.BOLT`, beside the
-wallet's existing `window.CWI`. This doc covers the Hodos injection (shipped as a shim) and the design
-it follows. The handler/library itself is documented by the code in `packages/bolt/src`.
+The page-facing BOLT interface — `packages/bolt` — runs in a web page as `window.BOLT`, beside the
+wallet's existing `window.CWI`. This doc covers the two browsers' ways of doing it and what has been
+verified. The handler itself is documented by the code in `packages/bolt/src`.
 
 ## The two models
 
 `page.js` is written for a **thin** page shim talking to a **trusted** handler on the browser's own
-side (`pageClient` on the page, `dispatcher` + a BOLT-semantic approve prompt on the trusted side).
-That is the clean model, and it fits **bsv-browser**, whose wallet toolbox already runs in JS on the
-app side — the handler and the real "transfer token X to Y" prompt run trusted in the RN app, the
-WebView page gets only `pageClient`.
+side: `pageClient` in the page, `dispatcher` plus a prompt that says what is being asked ("transfer
+token X to Y") on the trusted side. That fits **bsv-browser**, whose wallet already runs in JS in the
+app (see below).
 
 **Hodos has no trusted JS runtime** (its wallet is Rust, its shell is C++), so it uses the **fat
-page-side model (A)**: the whole handler — `packages/bolt` + `b017` + `@bsv/sdk` — is bundled and
-injected into the page, where it drives the wallet over Hodos's existing `wallet_call` IPC rail, the
-same bridge `window.CWI` rides. See `docs/interface-simplification.md` for how this sits against the
-full BRC-100 surface.
+page-side model**: the whole handler — `packages/bolt` + `b017` + `@bsv/sdk` — is bundled and injected
+into the page, and everything it needs from outside the page goes through the wallet.
 
-### What model A does and does not give
+## Hodos
 
-- The private key never leaves the Rust wallet. Every funding (`createAction`) and signing
-  (`createSignature`) call still goes through the wallet's own BRC-100 consent, unchanged.
-- Consent is therefore at **BRC-100 granularity** (the wallet's "sign / pay" modals), **not** BOLT
-  semantics. A page can call `window.BOLT.transfer(...)`; the user sees the wallet's generic payment/
-  signature prompt, not "transfer token X to Y". A trusted, BOLT-semantic prompt needs model-B
-  (bsv-browser), where the handler runs on the trusted side and `dispatcher`'s `approve` is honoured.
+### What runs where
 
-## How the shim is built
+| In the page (the injected bundle) | In the wallet, over the existing `wallet_call` bridge |
+|---|---|
+| token logic (b017), building and checking transactions | keys, signatures, funding: `getPublicKey`, `createSignature` (`hashToDirectlySign`), `createAction` |
+| | headers: `getHeaderForHeight` (the wallet's verified chain) |
+| | the network: `POST /boltBroadcast` — submit a transaction, answer the network's verdict |
+| | the tokens held: `POST /boltTokens` — the wallet's `bolt_tokens` table (V28) |
 
-`packages/bolt/src/browser.js` exports `installBolt({ walletCall, arcadeUrl, trustedIssuers, target })`.
-It builds a `BoltHandler` on a `brc100Core` whose wallet adapter calls
-`window.__hodos_walletCall(method, '/'+method, args)` — the bridge Hodos already injects for the CWI
-shim — and defines a frozen `window.BOLT` exposing the `PAGE_METHODS`.
+A page cannot reach the chain service itself (a site's CSP and CORS forbid it) and must not be where
+tokens live (page storage belongs to one site), which is why the last two rows exist
+(`rust-wallet/src/bolt.rs`, `database/bolt_token_repo.rs`; page side `src/wallet-rail.js`).
 
-`npm run bundle` (`scripts/bundle-shim.mjs`) bundles `browser.js` + `b017` + `@bsv/sdk` with esbuild
-into one IIFE (`dist/bolt-shim.js`, ~420 KB; b017's 128-bit balance math needs a `Buffer` polyfill,
-injected by `scripts/shim-inject.js`), then wraps it as a C++ header (`dist/BoltShimScript.h`).
+The token table is **append-and-retire** because its writer is page code: a row's token data (`beef`,
+`type`, `issuer`, `amount`…) is written once and never overwritten, a spent row is marked `spent` and
+kept, and there is no delete. The wallet bounds what is stored (`validate_row`) but cannot check a row
+against its BEEF — it does not run the token scripts.
 
-**The header is split into separate ~16 KB string-literal parts joined at runtime** by
-`BoltShimScript()`: MSVC caps one string literal at ~16,384 bytes (C2026), and the cap also applies to
-the concatenated result of *adjacent* literals, so a single 420 KB literal — or adjacent chunks — will
-not compile. `dist/` is a build artifact (gitignored); regenerate it with `npm run bundle` whenever the
-handler, b017, or the bundler changes.
+### Consent
 
-## Wiring in Hodos
+The private key never leaves the wallet, and neither new endpoint spends coins. Consent is the
+wallet's own, at **BRC-100 granularity**, not BOLT's:
 
-Two edits in `cef-native/src/handlers/simple_render_process_handler.cpp`, mirroring the CWI shim:
+- The site must be an approved domain (the connect prompt).
+- Each signature asks *"\<site\> wants permission to use a protocol: bolt token (level 1)"* until the
+  user gives that site a lasting grant. In the live run every signature prompted (18 prompts for one
+  mint–present–mint–pay–pay flow, each answered "Allow once").
+- Funding (`createAction`) is silent under the site's spending limits, like any payment.
+- `/boltBroadcast` and `/boltTokens` have no prompt of their own: any approved domain can broadcast
+  through the wallet, **read every token the wallet holds, add rows and retire them**. It cannot
+  destroy or alter token data.
 
-- `#include "../../include/core/BoltShimScript.h"` beside the `CWIShimScript.h` include.
-- In `OnContextCreated`, in the external-page branch (https main frame), right after the
-  `CWI_SHIM_SCRIPT` injection: `frame->ExecuteJavaScript(BoltShimScript(), url, 0);`. The
-  `__hodos_walletCall` bridge is injected just above, so `window.BOLT` inherits it under the same gate.
+So a user never sees "transfer token X to Y"; once a site holds the `bolt token` protocol grant it can
+sign any token operation silently. A prompt that states the operation needs the handler on the
+trusted side, which is the bsv-browser model.
 
-`cef-native/include/core/BoltShimScript.h` is the generated header, copied from
-`packages/bolt/dist/BoltShimScript.h`. It is checked into the Hodos repo (not ChainBrowsers).
+### Build
 
-Config: `installBolt` reads `window.__BOLT_CONFIG__` (`arcadeUrl`, `trustedIssuers`) if the browser
-sets it before injection, defaulting `arcadeUrl` to `http://localhost:8080`.
+`packages/bolt/src/browser.js` exports `installBolt({ walletCall, trustedIssuers, target })`. `npm run
+bundle` (`scripts/bundle-shim.mjs`) bundles it with esbuild into one IIFE (`dist/bolt-shim.js`,
+~425 KB; b017's 128-bit balance arithmetic needs a `Buffer` polyfill, `scripts/shim-inject.js`) and
+wraps it as a C++ header, `dist/BoltShimScript.h`.
 
-⚠️ **The injection gate is `https://` main frames only** (it shares the CWI gate), so an
-`http://localhost` test page does **not** get `window.BOLT` auto-injected. To exercise the shim on a
-localhost page, load `dist/bolt-shim.js` with a `<script>` tag and call `BoltShim.installBolt(...)`
-yourself.
+The header holds the script as **separate ~16 KB string literals joined at runtime** by
+`BoltShimScript()`: MSVC caps a string literal at about 16,384 bytes (error C2026; measured on VS2022
+14.44, where a 16 KB literal compiles and a 24 KB one does not), and the cap also applies to the
+concatenated result of *adjacent* literals. `dist/` is a build output; after changing the handler,
+b017 or the bundler, run `npm run bundle` and copy the header to
+`browsers/Hodos-Browser/cef-native/include/core/BoltShimScript.h` (checked into the Hodos repo).
 
-⚠️ **Broadcast is a direct page `fetch` to Arcade.** `brc100Core`'s `arcadeBroadcaster` runs in the
-page, so every op that touches the network — `mint`, `transfer`, `pay`, `receive`, and `verify` (which
-broadcasts the anchor) — fetches `arcadeUrl` from the page's origin. On a real https site that is
-subject to the site's CSP `connect-src` and to Arcade's CORS headers (not confirmed), so it is likely
-to be blocked. Only `getKey`, `list` and `present` avoid Arcade. **To make the money-moving methods
-work from a real page, broadcast must be proxied through the wallet rail** — a Rust endpoint (or a
-ride on an existing one), which model A was chosen to avoid. This is the main open gap.
+In Hodos, `cef-native/src/handlers/simple_render_process_handler.cpp` includes the header and, in
+`OnContextCreated`, injects `BoltShimScript()` right after `CWI_SHIM_SCRIPT`. It shares CWI's gate:
+**main frames of external `https://` pages only** — an `http://` page, an iframe and a loopback page
+get no `window.BOLT`. `installBolt` reads `window.__BOLT_CONFIG__.trustedIssuers` if the browser sets
+it; a page can always name the issuer per call (`verify(pkg, { issuer })`).
 
-## Status / verified
+### Verified
 
-- `browser.js` + the 420 KB bundle: proven headless — `test/browser.test.mjs` runs the real IIFE in a
-  `node:vm` page with a mock bridge: `window.BOLT` installs frozen with the page methods, `getKey()`
-  drives the wallet over the bridge at `/getPublicKey`, `list()` works offline, a wallet error throws.
-- `BoltShimScript.h`: compiled under MSVC (VS2022 14.44) — the 27-part header builds with no C2026.
-- **Not yet done in-browser**: a full Hodos shell build + loading a page and calling `window.BOLT`. The
-  two source edits follow the documented extension point and use a standard CEF API, but the end-to-end
-  run on the emulator/desktop is unverified here.
+- **In the browser** (`packages/bolt/live/hodos-page.live.mjs`, 2026-10-06, regtest + Arcade): an
+  https page in a Hodos tab has `window.BOLT`; the same page over http loads and has none (the
+  control). From the page: `getKey`; mint an AuthBOLT and present it to a verifier outside the
+  browser; mint a fungible token and pay part of it to a recipient outside the browser; reload the
+  page and still hold, and spend, the tokens. That run covers `createSignature` with
+  `hashToDirectlySign` from an external https origin, and both new endpoints over the IPC bridge.
+  The page is served by the test itself on `https://bolt.test:8443` (self-signed; the browser is
+  started with the name mapped to this machine), so it needs no internet.
+- **The wallet rails over HTTP** (`live/hodos.live.mjs`): the issuer mints, transfers and pays through
+  `/boltBroadcast` and `/boltTokens` on Arcade; V28 was applied to an existing wallet database.
+- **Headless**: `test/browser.test.mjs` runs the real bundle in `node:vm` pages whose bridge is a fake
+  wallet; the wallet's Rust side has unit tests for the table's rules, the network verdicts and the
+  row checks.
 
-## Known costs / risks
+### Open
 
-- **The network-touching methods are not usable from a real page yet** (see the broadcast warning
-  above): without a wallet-side broadcast proxy, `window.BOLT` on an https site can do `getKey`,
-  `list` and `present`, not `mint`/`transfer`/`pay`/`receive`/`verify`.
-- **~420 KB injected into every qualifying https main frame** on `OnContextCreated` (parse cost per
-  page load). A follow-up could inject a small loader and evaluate the bundle lazily on first
-  `window.BOLT` use, or gate injection to opted-in origins.
-- **Fungible funding is hybrid** (`selfFundable` in `fungible.js`): a token the wallet owns funds its
-  own transfer/split from its change (free — no `createAction`, no Hodos service fee); only a received
-  split *piece*, which carries no change, draws one fresh output from the wallet rail, after which its
-  remainder self-funds again. Pinned by the `createAction`-counting tests in `test/fungible.test.mjs`.
-- **`createSignature` with `hashToDirectlySign` from an external domain**: the handler signs token
-  covenant digests through this call. Whether the wallet's domain gating admits it from a real external
-  https origin (as opposed to a localhost test page) is unverified; if it is refused, token *signing*
-  from a page fails. Confirm against a running wallet before relying on it.
+- **Backup.** `bolt_tokens` is not in the wallet's backup (`backup.rs`). A recovered wallet has no
+  BOLT tokens, and they cannot be re-derived from the mnemonic: the BEEF is needed.
+- **Any approved site sees and can retire all tokens** (above). Scoping by site or by issuer, or a
+  prompt on `/boltTokens`, is not built.
+- **425 KB into every https main frame** at `OnContextCreated`; cost not measured. A small loader
+  that evaluates the bundle on first use, or injection for opted-in sites only, would avoid it.
+- **Relay note.** The Hodos commits touch `cef-native/**`; the two-platform workflow wants a relay
+  round naming the files when this branch feeds `0.4.0`. macOS is not built or tested.
 
-## Hodos repo note
+## bsv-browser
 
-The C++ change touches `cef-native/**`, so per the Hodos workflow it needs a relay-round note naming
-the file (`simple_render_process_handler.cpp`) and the new header, so the other platform rebuilds.
+See the section added with that work (`docs/bolt-browser.md` is updated there).
+
+## Funding of fungible operations
+
+A fungible token the wallet owns funds its own transfer, split or merge from the change output its
+transaction carries (no `createAction`, so no wallet funding transaction and no Hodos service fee).
+Only a received split *piece*, which carries no change, draws one fresh output from the wallet; its
+remainder self-funds after (`selfFundable` in `fungible.js`; pinned by the tests that count
+`createAction` calls).
