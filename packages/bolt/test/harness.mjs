@@ -44,7 +44,9 @@ export function pretendChain () {
   return { headers, seen, sent, txs, mine, broadcast }
 }
 
-export function walletOn (chain, { store = memoryStore(), ...opts } = {}) {
+/** A BRC-100 wallet on the pretend chain: the SDK's ProtoWallet keys, headers from the chain, and a
+ *  createAction that mines the output asked for. `calls` logs the methods used. */
+export function protoWalletOn (chain) {
   const proto = new ProtoWallet(PrivateKey.fromRandom())
   const calls = []
   const wallet = {
@@ -57,6 +59,11 @@ export function walletOn (chain, { store = memoryStore(), ...opts } = {}) {
       return { txid: tx.id('hex'), tx: tx.toAtomicBEEF() }
     }
   }
+  return { wallet, calls }
+}
+
+export function walletOn (chain, { store = memoryStore(), ...opts } = {}) {
+  const { wallet, calls } = protoWalletOn(chain)
   const handler = new BoltHandler({ core: brc100Core({ wallet, broadcast: chain.broadcast, store }), ...opts })
   return { handler, calls, store }
 }

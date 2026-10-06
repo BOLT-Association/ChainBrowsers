@@ -11,7 +11,8 @@
   "scripts": {
     "vendor": "node scripts/vendor-b017.mjs",
     "bundle": "node scripts/bundle-shim.mjs",
-    "test": "node --test"
+    "test": "node --test",
+    "bundle:rn": "node scripts/bundle-rn.mjs"
   },
   "dependencies": {
     "@bsv/sdk": "^2.8.11",

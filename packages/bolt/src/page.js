@@ -30,13 +30,17 @@ export function pageClient (send) {
   return Object.freeze(Object.fromEntries(Object.keys(PAGE_METHODS).map((m) => [m, call(m)])))
 }
 
+// What the user is shown. Every fragment that comes from the page is clamped to printable ASCII and a
+// short length, so a page cannot write its own sentence into the wallet's prompt.
+const show = (x, n) => String(x ?? '').replace(/[^\x21-\x7e]/g, '').slice(0, n)
+
 const describe = {
   receive: () => 'keep a BOLT token sent to this wallet',
-  present: ([id, opts]) => `show token ${String(id).slice(0, 8)} to this site${opts?.data ? ` with the data ${String(opts.data).slice(0, 32)}` : ''}`,
-  transfer: ([id, to]) => `transfer token ${String(id).slice(0, 8)} to ${String(to).slice(0, 12)}; the token leaves this wallet`,
-  pay: ([issuer, amount, to]) => `pay ${amount} of token ${String(issuer).slice(0, 12)} to ${String(to).slice(0, 12)}`,
-  melt: ([id]) => `melt (destroy) token ${String(id).slice(0, 8)}; it cannot be recovered`,
-  mint: ([opts]) => `mint a new ${opts?.type ?? 'AuthBOLT'} token with this wallet as its issuer`
+  present: ([id, opts]) => `show token ${show(id, 8)} to this site${opts?.data ? ` with the data ${show(opts.data, 32)}` : ''}`,
+  transfer: ([id, to]) => `transfer token ${show(id, 8)} to ${show(to, 12)}; the token leaves this wallet`,
+  pay: ([issuer, amount, to]) => `pay ${show(amount, 40)} of token ${show(issuer, 12)} to ${show(to, 12)}`,
+  melt: ([id]) => `melt (destroy) token ${show(id, 8)}; it cannot be recovered`,
+  mint: ([opts]) => `mint a new ${show(opts?.type ?? 'AuthBOLT', 24)} token${opts?.amount != null ? ` of ${show(opts.amount, 40)}` : ''} with this wallet as its issuer`
 }
 
 /**
