@@ -214,10 +214,104 @@ test('a received split piece is wallet-funded once; its remainder self-funds aft
   assert.equal(await user.handler.balance(issuerKey), '150')
 })
 
-test('pay more than any single token holds is refused', async () => {
+test('pay more than the wallet holds is refused', async () => {
   const chain = pretendChain()
   const issuer = walletOn(chain)
   const issuerKey = (await issuer.handler.getKey()).publicKey
   await issuer.handler.mint({ type: 'SimpleMultiBOLT', amount: '100' })
-  await assert.rejects(issuer.handler.pay(issuerKey, '200', '02' + '33'.repeat(32)), /at least 200/)
+  await assert.rejects(issuer.handler.pay(issuerKey, '200', '02' + '33'.repeat(32)), /holds 100 .* not at least 200/)
+  assert.equal(await issuer.handler.balance(issuerKey), '100') // nothing was spent
+})
+
+/** A user holding three tokens of one issuer: two received whole (300, 200) and one split piece (150). */
+async function userWithThree (chain) {
+  const issuer = walletOn(chain)
+  const issuerKey = (await issuer.handler.getKey()).publicKey
+  const user = walletOn(chain, { trustedIssuers: [issuerKey], store: nodeSqliteStore() })
+  const userPub = (await user.handler.getKey()).publicKey
+  for (const amount of ['300', '200']) {
+    const { id } = await issuer.handler.mint({ type: 'SimpleMultiBOLT', amount })
+    assert.equal((await user.handler.receive((await issuer.handler.transfer(id, userPub)).package)).ok, true)
+  }
+  await issuer.handler.mint({ type: 'SimpleMultiBOLT', amount: '1000' })
+  assert.equal((await user.handler.receive((await issuer.handler.pay(issuerKey, '150', userPub)).package)).ok, true)
+  assert.equal(await user.handler.balance(issuerKey), '650')
+  return { issuer, issuerKey, user }
+}
+
+test('pay across tokens: merges held tokens when no single one covers the amount', async () => {
+  const chain = pretendChain()
+  const { issuerKey, user } = await userWithThree(chain)
+  const merchant = walletOn(chain, { trustedIssuers: [issuerKey] })
+
+  // 400 > the largest single token (300): merge 300 + 200, split 400 off, keep 100
+  const pkg = (await user.handler.pay(issuerKey, '400', (await merchant.handler.getKey()).publicKey)).package
+  const got = await merchant.handler.receive(pkg)
+  assert.equal(got.ok, true, got.reason)
+  assert.equal(got.kind, 'split')
+  assert.equal(await merchant.handler.balance(issuerKey), '400')
+  assert.equal(await user.handler.balance(issuerKey), '250')
+  assert.deepEqual((await user.handler.list()).map((r) => r.amount).sort(), ['100', '150'])
+})
+
+test('pay the whole balance: merges every token (a split piece included) and transfers the lot', async () => {
+  const chain = pretendChain()
+  const { issuerKey, user } = await userWithThree(chain)
+  const merchant = walletOn(chain, { trustedIssuers: [issuerKey] })
+
+  const pkg = (await user.handler.pay(issuerKey, '650', (await merchant.handler.getKey()).publicKey)).package
+  const got = await merchant.handler.receive(pkg)
+  assert.equal(got.ok, true, got.reason)
+  assert.equal(got.kind, 'transfer')
+  assert.equal(await merchant.handler.balance(issuerKey), '650')
+  assert.deepEqual(await user.handler.list(), [])
+  // the merchant can spend the merged token onward
+  const back = (await merchant.handler.pay(issuerKey, '50', (await user.handler.getKey()).publicKey)).package
+  assert.equal((await user.handler.receive(back)).ok, true)
+  assert.equal(await merchant.handler.balance(issuerKey), '600')
+})
+
+test('merging two freshly minted tokens (no grandparent yet) self-transfers them first', async () => {
+  const chain = pretendChain()
+  const issuer = walletOn(chain)
+  const issuerKey = (await issuer.handler.getKey()).publicKey
+  const user = walletOn(chain, { trustedIssuers: [issuerKey] })
+  await issuer.handler.mint({ type: 'SimpleMultiBOLT', amount: '60' })
+  await issuer.handler.mint({ type: 'SimpleMultiBOLT', amount: '70' })
+
+  const pkg = (await issuer.handler.pay(issuerKey, '100', (await user.handler.getKey()).publicKey)).package
+  assert.equal((await user.handler.receive(pkg)).ok, true)
+  assert.equal(await user.handler.balance(issuerKey), '100')
+  assert.equal(await issuer.handler.balance(issuerKey), '30')
+})
+
+test('melt a fungible token: it leaves the wallet and its satoshis return', async () => {
+  const chain = pretendChain()
+  const issuer = walletOn(chain)
+  const issuerKey = (await issuer.handler.getKey()).publicKey
+  const { id } = await issuer.handler.mint({ type: 'SimpleMultiBOLT', amount: '500' })
+  const { txid } = await issuer.handler.melt(id)
+  assert.match(txid, /^[0-9a-f]{64}$/)
+  assert.ok(chain.seen.has(txid), 'the melt is on the network')
+  assert.deepEqual(await issuer.handler.list(), [])
+  assert.equal(await issuer.handler.balance(issuerKey), '0')
+})
+
+test('melt a received split piece (no change of its own): self-transferred, then melted', async () => {
+  const chain = pretendChain()
+  const issuer = walletOn(chain)
+  const issuerKey = (await issuer.handler.getKey()).publicKey
+  const user = walletOn(chain, { trustedIssuers: [issuerKey] })
+  await issuer.handler.mint({ type: 'SimpleMultiBOLT', amount: '1000' })
+  const piece = await user.handler.receive((await issuer.handler.pay(issuerKey, '400', (await user.handler.getKey()).publicKey)).package)
+  const { txid } = await user.handler.melt(piece.tokenId)
+  assert.ok(chain.seen.has(txid))
+  assert.equal(await user.handler.balance(issuerKey), '0')
+})
+
+test('melt refuses an NFT', async () => {
+  const chain = pretendChain()
+  const issuer = walletOn(chain)
+  const { id } = await issuer.handler.mint({ type: 'AuthBOLT' })
+  await assert.rejects(issuer.handler.melt(id), /not a fungible/)
 })

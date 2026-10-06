@@ -16,6 +16,7 @@ export const PAGE_METHODS = {
   present: { asks: true },
   transfer: { asks: true },
   pay: { asks: true },
+  melt: { asks: true },
   mint: { asks: true }
 }
 
@@ -34,6 +35,7 @@ const describe = {
   present: ([id, opts]) => `show token ${String(id).slice(0, 8)} to this site${opts?.data ? ` with the data ${String(opts.data).slice(0, 32)}` : ''}`,
   transfer: ([id, to]) => `transfer token ${String(id).slice(0, 8)} to ${String(to).slice(0, 12)}; the token leaves this wallet`,
   pay: ([issuer, amount, to]) => `pay ${amount} of token ${String(issuer).slice(0, 12)} to ${String(to).slice(0, 12)}`,
+  melt: ([id]) => `melt (destroy) token ${String(id).slice(0, 8)}; it cannot be recovered`,
   mint: ([opts]) => `mint a new ${opts?.type ?? 'AuthBOLT'} token with this wallet as its issuer`
 }
 

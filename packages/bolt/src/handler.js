@@ -9,7 +9,7 @@
 import { Hash, P2PKH, Utils } from '@bsv/sdk'
 import { AUTH_DATA_MAX_BYTES, fromBeef, toAtomicBeef, verifyAndBroadcast } from 'b017'
 import { NFT_TYPES, buildCommit, buildMint, buildSettle, indexFields, readToken } from './nft.js'
-import { mintFungible, reconstructFungible, selfFundable, splitFungible, transferFungible } from './fungible.js'
+import { meltFungible, mergeFungible, mintFungible, reconstructFungible, selfFundable, splitFungible, transferFungible } from './fungible.js'
 import { signWith, sizeOf, walletSigner } from './signer.js'
 
 const hex = (bytes) => Utils.toHex(bytes)
@@ -111,9 +111,11 @@ export class BoltHandler {
   /**
    * Pay `amount` of a fungible token (issuer's compressed pubkey, hex) to `to` (recipient 33-byte
    * pubkey): splits a held token, keeping the remainder, and returns the package for the recipient's
-   * piece. An exact amount transfers the whole token. A token the wallet owns funds each leg from its
-   * own change; only a received split piece (no change of its own) draws a fresh output from the
-   * wallet's p2pkh fund/change rail, and after that its remainder self-funds again.
+   * piece. An exact amount transfers the whole token. When no single held token covers the amount,
+   * held tokens of that issuer are merged (largest first) until one does. A token the wallet owns
+   * funds each leg from its own change; only a received split piece (no change of its own) draws a
+   * fresh output from the wallet's p2pkh fund/change rail, and its remainder self-funds after.
+   * Every step is on the network and in the store before the next begins.
    * @returns `{ package }`
    */
   async pay (issuer, amount, to) {
@@ -122,33 +124,39 @@ export class BoltHandler {
     if (toPubKey.length !== 33) throw new Error('pay needs the recipient 33-byte public key')
     const want = BigInt(amount)
     if (want <= 0n) throw new Error('amount must be positive')
-    const cand = (await this.core.store.list()).find(
-      (r) => r.type === 'SimpleMultiBOLT' && r.issuer === iss && r.amount != null && BigInt(r.amount) >= want)
-    if (!cand) throw new Error(`no single SimpleMultiBOLT of ${iss} holds at least ${amount}`)
-
-    const token = await this.#held(cand.id)
     const signer = await walletSigner(this.core, this.keyId)
-    let t = reconstructFungible(token.tx, signer, token.vout)
+    let { id, have } = await this.#gather(iss, want, signer)
+    const t = await this.#fungible(id, signer)
 
-    if (BigInt(cand.amount) === want) {
+    if (have === want) {
       const { commit, settle } = await transferFungible(t, toPubKey, await this.#fundingFor(t, signer))
       await this.#send(commit, 'commit'); await this.#send(settle, 'settle')
-      await this.core.store.delete(cand.id)
+      await this.core.store.delete(id)
       return { package: [commit, settle].map((tx) => hex(toAtomicBeef(tx))) }
     }
 
     // split needs a grandparent; a genesis / single-hop token gets a self-transfer first to build one.
-    if (t.prevTxs.length < 3) {
-      const self = await transferFungible(t, signer.publicKey, await this.#fundingFor(t, signer))
-      await this.#send(self.commit, 'self-commit'); await this.#send(self.settle, 'self-settle')
-    }
+    if (t.prevTxs.length < 3) id = await this.#selfTransfer(id, t, signer)
     // after a transfer (own or self) the settle's change pays this key, so the split self-funds
     const { commit, settle } = await splitFungible(t, signer.publicKey, toPubKey, amount, await this.#fundingFor(t, signer))
     await this.#send(commit, 'commit')
     const settleStatus = await this.#send(settle, 'settle')
-    await this.core.store.delete(cand.id)
     await this.#keep(settle, 0, { kind: 'settle', network: settleStatus, provenance: null }) // remainder to self
+    await this.core.store.delete(id)
     return { package: [commit, settle].map((tx) => hex(toAtomicBeef(tx))) }
+  }
+
+  /** Melt a held fungible token: one broadcast transaction destroys it and returns its satoshis to
+   *  this wallet's key. @returns `{ txid }` */
+  async melt (id) {
+    const signer = await walletSigner(this.core, this.keyId)
+    const t = await this.#fungible(id, signer)
+    // a melt is funded from the token's own change; a split piece has none until it is self-transferred
+    if (!selfFundable(t)) id = await this.#selfTransfer(id, t, signer)
+    const tx = await meltFungible(t)
+    await this.#send(tx, 'melt')
+    await this.core.store.delete(id)
+    return { txid: tx.id('hex') }
   }
 
   /**
@@ -252,6 +260,63 @@ export class BoltHandler {
   async #fundingFor (t, signer, sats = 1000) {
     if (selfFundable(t)) return undefined
     return this.core.fund(new P2PKH().lock(Hash.hash160(signer.publicKey)), sats)
+  }
+
+  /** A held SimpleMultiBOLT as a b017 instance this wallet's signer can spend. */
+  async #fungible (id, signer) {
+    const token = await this.#held(id)
+    if (token.type !== 'SimpleMultiBOLT') throw new Error(`token ${id} is a ${token.type}, not a fungible SimpleMultiBOLT`)
+    return reconstructFungible(token.tx, signer, token.vout)
+  }
+
+  /** Transfer `t` (held as `id`) to this wallet's own key, on the network and in the store; returns
+   *  the new id. It builds the grandparent b017's split and merge spend, and gives a split piece a
+   *  change output of its own. `t` is left at the new settle. */
+  async #selfTransfer (id, t, signer) {
+    const { commit, settle } = await transferFungible(t, signer.publicKey, await this.#fundingFor(t, signer))
+    await this.#send(commit, 'self-commit')
+    const network = await this.#send(settle, 'self-settle')
+    const kept = await this.#keep(settle, 0, { kind: 'settle', network, provenance: null })
+    await this.core.store.delete(id)
+    return kept.id
+  }
+
+  /** A held token of `iss` covering `want`: the smallest single one that does, else the largest
+   *  merged with the next largest until they do. @returns `{ id, have }` */
+  async #gather (iss, want, signer) {
+    const held = (await this.core.store.list())
+      .filter((r) => r.type === 'SimpleMultiBOLT' && r.issuer === iss && r.amount != null)
+      .map((r) => ({ id: r.id, have: BigInt(r.amount) }))
+      .sort((a, b) => (a.have < b.have ? -1 : a.have > b.have ? 1 : 0))
+    const single = held.find((r) => r.have >= want)
+    if (single) return single
+    const total = held.reduce((sum, r) => sum + r.have, 0n)
+    if (total < want) throw new Error(`this wallet holds ${total} of ${iss}, not at least ${want}`)
+    let acc = held.pop()
+    while (acc.have < want) {
+      const next = held.pop()
+      acc = { id: await this.#merge(acc.id, next.id, signer), have: acc.have + next.have }
+    }
+    return acc
+  }
+
+  /** Merge two held tokens of one issuer into one (commit and settle broadcast); returns its id. */
+  async #merge (idA, idB, signer) {
+    const a = await this.#fungible(idA, signer)
+    const b = await this.#fungible(idB, signer)
+    if (a.prevTxs.length < 3) idA = await this.#selfTransfer(idA, a, signer)
+    if (b.prevTxs.length < 3) idB = await this.#selfTransfer(idB, b, signer)
+    // either token's own change can fund the merge; a wallet output only when neither carries one
+    const fund = selfFundable(a) ? undefined
+      : selfFundable(b) ? { tx: b.tx, vout: b.tx.outputs.length - 1 }
+        : await this.#fundingFor(a, signer)
+    const { commit, settle } = await mergeFungible(a, b, signer.publicKey, fund)
+    await this.#send(commit, 'merge-commit')
+    const network = await this.#send(settle, 'merge-settle')
+    const kept = await this.#keep(settle, 0, { kind: 'settle', network, provenance: null })
+    await this.core.store.delete(idA)
+    await this.core.store.delete(idB)
+    return kept.id
   }
 
   async #held (id) {

@@ -91,6 +91,24 @@ export async function transferFungible (t, toPubKey, fund) {
   return { commit: t.prevTxs[n - 2], settle: t.prevTxs[n - 1] }
 }
 
+/** Merge `other` into `t` (two tokens of one issuer held by the same key); the merged token, holding
+ *  both balances, goes to `selfPubKey` at vout 0 of the merge settle. b017's merge spends an ancestor
+ *  proof on both lineages, so each must have been transferred at least once (lineage ≥ 3). Funding as
+ *  for transferFungible: `t`'s own change unless a `{tx, vout}` output of `t`'s key is given. */
+export async function mergeFungible (t, other, selfPubKey, fund) {
+  const source = fund ? { tx: fund.tx, vout: fund.vout, key: t.signer } : undefined
+  await t.merge(other, selfPubKey, source)
+  const n = t.prevTxs.length
+  return { commit: t.prevTxs[n - 2], settle: t.prevTxs[n - 1] }
+}
+
+/** Melt `t`: one transaction that destroys the token and returns its satoshis to the owner's key. It
+ *  is funded from the token's own change (b017 takes no other source), so `t` must be selfFundable. */
+export async function meltFungible (t) {
+  await t.melt()
+  return t.tx
+}
+
 /** Split `t`, paying `amount` to `recipientPubKey` and keeping the remainder to `selfPubKey`. Funding
  *  as for transferFungible: self-funded unless a wallet output `fund` is given. The split settle
  *  carries the remainder at vout 0 and the paid piece at vout 1. Returns the built commit/settle.
