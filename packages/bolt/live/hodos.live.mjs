@@ -13,6 +13,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Hash, PrivateKey, ProtoWallet, Utils } from '@bsv/sdk'
 import { BoltHandler, brc100Core, nodeSqliteStore } from '../src/index.js'
+import { walletBroadcaster, walletStore } from '../src/wallet-rail.js'
 
 const WALLET = process.env.WALLET_URL ?? 'http://127.0.0.1:31401'
 const ARCADE = process.env.ARCADE_URL ?? 'http://localhost:8080'
@@ -43,9 +44,12 @@ const keyOnly = ({ funded = false } = {}) => {
   }
 }
 
-const issuer = new BoltHandler({ core: brc100Core({ wallet: hodos, arcadeUrl: ARCADE }) })
+// The issuer works the way a page in Hodos does: the network and the token store are the wallet's
+// (POST /boltBroadcast, POST /boltTokens), not Arcade and local memory.
+const rail = (endpoint, body) => hodos[endpoint.slice(1)](body)
+const issuer = new BoltHandler({ core: brc100Core({ wallet: hodos, broadcast: walletBroadcaster(rail), store: walletStore(rail) }) })
 const issuerKey = (await issuer.getKey()).publicKey
-step(`issuer key from Hodos ${issuerKey.slice(0, 16)}…`)
+step(`issuer key from Hodos ${issuerKey.slice(0, 16)}â€¦`)
 // The user keeps tokens in a real on-disk SQLite store (a file), so persistence is exercised against
 // live Arcade BEEFs, not only the headless pretend chain.
 const userDb = join(mkdtempSync(join(tmpdir(), 'bolt-live-')), 'tokens.db')
@@ -54,14 +58,14 @@ const user = new BoltHandler({ core: brc100Core({ wallet: keyOnly({ funded: true
 const site = new BoltHandler({ core: brc100Core({ wallet: keyOnly(), arcadeUrl: ARCADE }), trustedIssuers: [issuerKey] })
 
 const minted = await issuer.mint({ type: 'AuthBOLT' })
-step(`Hodos minted AuthBOLT ${minted.id.slice(0, 16)}… (funded by createAction, signed by createSignature, on the network)`)
+step(`Hodos minted AuthBOLT ${minted.id.slice(0, 16)}â€¦ (funded by createAction, signed by createSignature, on the network)`)
 
 const { package: pkg } = await issuer.transfer(minted.id, (await user.getKey()).pubKeyHash)
 step(`Hodos transferred it: commit and settle on the network (${Math.round(pkg.join('').length / 2)} bytes of BEEF)`)
 
 const got = await user.receive(pkg)
 assert.equal(got.ok, true, got.reason)
-step(`the user verified and kept ${got.tokenId.slice(0, 16)}…`)
+step(`the user verified and kept ${got.tokenId.slice(0, 16)}â€¦`)
 
 // Everything we know about the anchor was stored, with a real network status from Arcade.
 const rec = await userStore.get(got.tokenId)
@@ -88,11 +92,11 @@ step('the site verified an unfunded presentation carrying its 32-byte challenge'
 
 const wrong = await site.verify(pkg, { issuer: '02' + '11'.repeat(32) })
 assert.equal(wrong.ok, false)
-step(`a foreign issuer is refused (${wrong.reason.slice(0, 40)}…)`)
+step(`a foreign issuer is refused (${wrong.reason.slice(0, 40)}â€¦)`)
 
 // --- fungible (SimpleMultiBOLT): mint with an amount, transfer the whole token, receive ---
 const fmint = await issuer.mint({ type: 'SimpleMultiBOLT', amount: '1000000' })
-step(`Hodos minted SimpleMultiBOLT ${fmint.id.slice(0, 16)}… amount 1000000 (on the network)`)
+step(`Hodos minted SimpleMultiBOLT ${fmint.id.slice(0, 16)}â€¦ amount 1000000 (on the network)`)
 assert.equal(await issuer.balance(issuerKey), '1000000')
 const fpkg = (await issuer.transfer(fmint.id, (await user.getKey()).publicKey)).package
 step(`Hodos transferred the fungible token (${Math.round(fpkg.join('').length / 2)} bytes of BEEF)`)
@@ -137,7 +141,14 @@ step(`the user paid ${all - 50n} across tokens (merge + split, on the network); 
 const last = (await user.list()).find((r) => r.type === 'SimpleMultiBOLT')
 const melted = await user.melt(last.id)
 assert.equal(await user.balance(issuerKey), '0')
-step(`the user melted the remaining 50 (${melted.txid.slice(0, 16)}� on the network)`)
+step(`the user melted the remaining 50 (${melted.txid.slice(0, 16)}… on the network)`)
+
+// The wallet's own table holds what the issuer did: retired rows are kept with their BEEFs.
+const kept = await hodos.boltTokens({ op: 'list', status: 'spent' })
+const heldNow = await hodos.boltTokens({ op: 'list' })
+assert.ok(kept.rows.length >= 3 && kept.rows.every((r) => r.status === 'spent' && /^[0-9a-f]+$/.test(r.beef)))
+assert.equal(heldNow.rows.filter((r) => r.type === 'SimpleMultiBOLT').map((r) => r.amount).join(','), '750')
+step(`the wallet's bolt_tokens table: ${heldNow.rows.length} held, ${kept.rows.length} spent rows kept`)
 
 console.log('wallet methods used:', [...calls].sort().join(', '))
 console.log('PASS BOLT handler on Hodos + Arcade')
