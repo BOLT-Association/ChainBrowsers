@@ -31,12 +31,15 @@ const hodos = new Proxy({}, {
   }
 })
 
-const keyOnly = () => {
+/** A wallet whose keys are the SDK's ProtoWallet. `funded` adds a funding rail: Hodos pays the P2PKH
+ *  output this wallet asks for (to this wallet's own key), so this wallet's key signs what spends it. */
+const keyOnly = ({ funded = false } = {}) => {
   const proto = new ProtoWallet(PrivateKey.fromRandom())
   return {
     getPublicKey: (a) => proto.getPublicKey(a),
     createSignature: (a) => proto.createSignature(a),
-    getHeaderForHeight: (a) => hodos.getHeaderForHeight(a)
+    getHeaderForHeight: (a) => hodos.getHeaderForHeight(a),
+    ...(funded ? { createAction: (a) => hodos.createAction(a) } : {})
   }
 }
 
@@ -47,7 +50,7 @@ step(`issuer key from Hodos ${issuerKey.slice(0, 16)}â€¦`)
 // live Arcade BEEFs, not only the headless pretend chain.
 const userDb = join(mkdtempSync(join(tmpdir(), 'bolt-live-')), 'tokens.db')
 const userStore = nodeSqliteStore(userDb)
-const user = new BoltHandler({ core: brc100Core({ wallet: keyOnly(), arcadeUrl: ARCADE, store: userStore }), trustedIssuers: [issuerKey] })
+const user = new BoltHandler({ core: brc100Core({ wallet: keyOnly({ funded: true }), arcadeUrl: ARCADE, store: userStore }), trustedIssuers: [issuerKey] })
 const site = new BoltHandler({ core: brc100Core({ wallet: keyOnly(), arcadeUrl: ARCADE }), trustedIssuers: [issuerKey] })
 
 const minted = await issuer.mint({ type: 'AuthBOLT' })
@@ -110,6 +113,31 @@ assert.equal(pgot.kind, 'split')
 assert.equal(await issuer.balance(issuerKey), '750')
 assert.equal(BigInt(await user.balance(issuerKey)), userBefore + 250n)
 step(`Hodos paid the user 250 by split (self-transfer + split, on the network); issuer keeps 750`)
+
+// --- the user re-spends the split piece it received (no change of its own: one wallet funding) ---
+const sitePub = (await site.getKey()).publicKey
+const rgot = await site.receive((await user.pay(issuerKey, '100', sitePub)).package)
+assert.equal(rgot.ok, true, rgot.reason)
+assert.equal(rgot.kind, 'split')
+assert.equal(await site.balance(issuerKey), '100')
+assert.equal(BigInt(await user.balance(issuerKey)), userBefore + 150n)
+step('the user re-spent the received split piece: paid the site 100, keeps 150 of it (on the network)')
+
+// --- pay across tokens: no single token covers the amount, so the user's tokens are merged ---
+const all = BigInt(await user.balance(issuerKey))
+const largest = (await user.list()).reduce((m, r) => (BigInt(r.amount ?? 0) > m ? BigInt(r.amount) : m), 0n)
+assert.ok(largest < all - 50n, 'the amount below needs more than the largest single token')
+const mgot = await site.receive((await user.pay(issuerKey, (all - 50n).toString(), sitePub)).package)
+assert.equal(mgot.ok, true, mgot.reason)
+assert.equal(await user.balance(issuerKey), '50')
+assert.equal(BigInt(await site.balance(issuerKey)), all - 50n + 100n)
+step(`the user paid ${all - 50n} across tokens (merge + split, on the network); keeps 50`)
+
+// --- melt: the user destroys what is left ---
+const last = (await user.list()).find((r) => r.type === 'SimpleMultiBOLT')
+const melted = await user.melt(last.id)
+assert.equal(await user.balance(issuerKey), '0')
+step(`the user melted the remaining 50 (${melted.txid.slice(0, 16)}… on the network)`)
 
 console.log('wallet methods used:', [...calls].sort().join(', '))
 console.log('PASS BOLT handler on Hodos + Arcade')
