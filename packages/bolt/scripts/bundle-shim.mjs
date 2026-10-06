@@ -35,17 +35,14 @@ const js = result.outputFiles[0].text
 const jsPath = join(dist, 'bolt-shim.js')
 writeFileSync(jsPath, js)
 
-// The install tail: run inside the page after the bundle defines `BoltShim`. arcadeUrl and the trusted
-// issuers come from a small config the browser sets on window before injection (window.__BOLT_CONFIG__),
-// defaulting to the local stack so a localhost test page works with no extra wiring.
+// The install tail: run inside the page after the bundle defines `BoltShim`. The trusted issuers come
+// from a small config the browser may set on window before injection (window.__BOLT_CONFIG__); a page
+// can always narrow them per call (`verify(pkg, { issuer })`).
 const tail = `
 ;(function () {
   try {
     var cfg = (typeof window !== 'undefined' && window.__BOLT_CONFIG__) || {};
-    BoltShim.installBolt({
-      arcadeUrl: cfg.arcadeUrl || 'http://localhost:8080',
-      trustedIssuers: cfg.trustedIssuers || []
-    });
+    BoltShim.installBolt({ trustedIssuers: cfg.trustedIssuers || [] });
   } catch (e) {
     try { console.error('BOLT shim install failed:', e && e.message); } catch (_) {}
   }

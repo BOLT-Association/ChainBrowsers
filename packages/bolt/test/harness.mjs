@@ -9,6 +9,7 @@ import { BoltHandler, brc100Core, memoryStore } from '../src/index.js'
 export function pretendChain () {
   const headers = new Map() // height -> 80-byte header hex
   const seen = new Set()
+  const txs = new Map() // txid -> Transaction, for a broadcaster that is handed hex (the wallet rail)
   const sent = []
   let height = 100
   /** A mined tx paying `script`: a one-tx block whose merkle root is the txid. */
@@ -20,6 +21,7 @@ export function pretendChain () {
     header.splice(36, 32, ...Utils.toArray(txid, 'hex').reverse())
     headers.set(height, Utils.toHex(header))
     seen.add(txid)
+    txs.set(txid, tx)
     return tx
   }
   const broadcast = async (tx) => {
@@ -36,9 +38,10 @@ export function pretendChain () {
     if (outSats > inSats) return { status: 'rejected', detail: 'creates value' }
     try { if (!verifyTx(tx, true).valid) return { status: 'rejected', detail: 'script' } } catch (e) { return { status: 'rejected', detail: 'script' } }
     seen.add(txid)
+    txs.set(txid, tx)
     return { status: 'accepted' }
   }
-  return { headers, seen, sent, mine, broadcast }
+  return { headers, seen, sent, txs, mine, broadcast }
 }
 
 export function walletOn (chain, { store = memoryStore(), ...opts } = {}) {

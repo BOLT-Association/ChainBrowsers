@@ -3,15 +3,14 @@
 // The BEEF is the source of truth; every column is a generic index the recognizer fills, so a NEW
 // b017 type adds a registry row and an extractor, never a column (see docs/bolt-store-review.md).
 // `sqlStore` runs over a tiny SQL adapter ({exec, run, get, all}) so the same store backs Hodos
-// (rusqlite) and bsv-browser (expo-sqlite); `nodeSqliteStore` wires it to node:sqlite for tests.
+// (rusqlite) and bsv-browser (expo-sqlite); `nodeSqliteStore` (store-node.js) wires it to node:sqlite.
+// This file imports nothing from Node, so it bundles for a page and for React Native.
 //
 // Everything we know about the ANCHOR is kept. For a held token the anchor is the tx the token
 // output rests on (its own settle, or the mint): we store its txid, kind, the network status the
 // broadcaster last reported, and its proof state against our own headers (proven / height / root,
 // so a reorg recheck can find it). We also keep `provenance` — the anchor the package we received
 // stood on — as the one step of history b017's offline check reaches.
-import { createRequire } from 'node:module'
-
 export const TOKENS_SCHEMA = `
 CREATE TABLE IF NOT EXISTS tokens (
   outpoint          TEXT PRIMARY KEY,            -- "<txid>.<vout>"
@@ -44,7 +43,8 @@ const COLUMNS = [
 
 const voutOf = (outpoint) => Number(String(outpoint).split('.')[1] ?? 0)
 
-function toRow (record, now) {
+/** A handler record as a table row (the columns above). */
+export function toRow (record, now) {
   const outpoint = record.outpoint ?? record.id
   const a = record.anchor ?? {}
   return {
@@ -68,7 +68,8 @@ function toRow (record, now) {
   }
 }
 
-function fromRow (row) {
+/** A table row as the record the handler works with. */
+export function fromRow (row) {
   if (!row) return undefined
   return {
     id: row.outpoint,
@@ -151,22 +152,4 @@ export function sqlStore (db, { now = () => Date.now() } = {}) {
     },
     close () { db.close?.() }
   }
-}
-
-/**
- * A token store backed by node:sqlite (Node 22.5+). `path` defaults to in-memory. node:sqlite is
- * imported lazily so consumers that use another backend never trigger its experimental warning.
- */
-export function nodeSqliteStore (path = ':memory:', opts = {}) {
-  const require = createRequire(import.meta.url)
-  const { DatabaseSync } = require('node:sqlite')
-  const db = new DatabaseSync(path)
-  const adapter = {
-    exec: (sql) => db.exec(sql),
-    run: (sql, params = []) => db.prepare(sql).run(...params.map((p) => p === undefined ? null : p)),
-    get: (sql, params = []) => db.prepare(sql).get(...params.map((p) => p === undefined ? null : p)),
-    all: (sql, params = []) => db.prepare(sql).all(...params.map((p) => p === undefined ? null : p)),
-    close: () => db.close()
-  }
-  return sqlStore(adapter, opts)
 }

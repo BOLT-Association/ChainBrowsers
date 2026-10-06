@@ -14,7 +14,10 @@
       "Bash(tasklist)",
       "Bash(node --test)",
       "Bash(node live/hodos.live.mjs)",
-      "mcp__claude-in-chrome__tabs_context_mcp"
+      "mcp__claude-in-chrome__tabs_context_mcp",
+      "Bash(docker image inspect *)",
+      "Bash(git -C browsers/Hodos-Browser status *)",
+      "Bash(git -C browsers/Hodos-Browser rev-parse *)"
     ]
   }
 }

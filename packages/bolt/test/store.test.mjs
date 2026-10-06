@@ -7,7 +7,7 @@ import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { memoryStore } from '../src/core.js'
-import { nodeSqliteStore } from '../src/store.js'
+import { nodeSqliteStore } from '../src/store-node.js'
 
 const ISS = '02' + '11'.repeat(32)
 const sample = (over = {}) => ({

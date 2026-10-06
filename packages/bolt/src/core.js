@@ -28,6 +28,17 @@ const SEEN = new Set(['SEEN_ON_NETWORK', 'SEEN_ON_MULTIPLE_NODES', 'ACCEPTED_BY_
 const REFUSED = new Set(['REJECTED', 'DOUBLE_SPEND_ATTEMPTED'])
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
+/** Whether `tx` carries a merkle path that proves it into the wallet's own headers: such a tx is
+ *  mined, whether or not the broadcaster in use has ever heard of it. */
+export async function provenInHeaders (tx, isValidRootForHeight) {
+  if (!tx.merklePath || !isValidRootForHeight) return false
+  try {
+    return await isValidRootForHeight(tx.merklePath.computeRoot(tx.id('hex')), tx.merklePath.blockHeight)
+  } catch {
+    return false // cannot tell: let the network answer
+  }
+}
+
 /**
  * Broadcast through Arcade and wait for a network status. Arcade answers 202 for anything well formed, so
  * the verdict is the status that follows.
@@ -42,10 +53,7 @@ export function arcadeBroadcaster ({ arcadeUrl, isValidRootForHeight, fetch = gl
   }
   return async (tx) => {
     const txid = tx.id('hex')
-    if (tx.merklePath && isValidRootForHeight) {
-      const root = tx.merklePath.computeRoot(txid)
-      if (await isValidRootForHeight(root, tx.merklePath.blockHeight)) return { status: 'already-seen', detail: 'mined' }
-    }
+    if (await provenInHeaders(tx, isValidRootForHeight)) return { status: 'already-seen', detail: 'mined' }
     const known = await statusOf(txid).catch(() => undefined)
     if (SEEN.has(known)) return { status: 'already-seen', detail: known }
 
@@ -75,7 +83,8 @@ const rootOfHeader = (headerHex) => Utils.toHex(Utils.toArray(headerHex, 'hex').
  * A wallet core on top of a BRC-100 wallet (`getPublicKey`, `createSignature`, `getHeaderForHeight`,
  * `createAction`) and Arcade.
  * @param wallet     anything with those four methods: `window.CWI`, a toolbox Wallet, an HTTP client
- * @param arcadeUrl  Arcade's API (`:8080` on the local stack); or pass `broadcast` to replace it
+ * @param arcadeUrl  Arcade's API (`:8080` on the local stack); or pass `broadcast`, a
+ *                   `(tx) => { status, detail }` that reaches the network another way (wallet-rail.js)
  */
 export function brc100Core ({ wallet, arcadeUrl, broadcast, store = memoryStore(), protocolID = BOLT_PROTOCOL, fetch = globalThis.fetch }) {
   const key = (keyID) => ({ protocolID, keyID, counterparty: 'self' })
@@ -83,12 +92,16 @@ export function brc100Core ({ wallet, arcadeUrl, broadcast, store = memoryStore(
     const { header } = await wallet.getHeaderForHeight({ height })
     return typeof header === 'string' && rootOfHeader(header) === root
   }
+  const net = broadcast ?? arcadeBroadcaster({ arcadeUrl, fetch })
   return {
     store,
     isValidRootForHeight,
     publicKey: async (keyId) => Utils.toArray((await wallet.getPublicKey(key(keyId))).publicKey, 'hex'),
     signDigest: async (keyId, digest) => (await wallet.createSignature({ ...key(keyId), hashToDirectlySign: digest })).signature,
-    broadcast: broadcast ?? arcadeBroadcaster({ arcadeUrl, isValidRootForHeight, fetch }),
+    // Whatever the broadcaster, a tx already proven by the wallet's headers is not sent again.
+    broadcast: async (tx) => (await provenInHeaders(tx, isValidRootForHeight))
+      ? { status: 'already-seen', detail: 'mined' }
+      : net(tx),
     fund: async (lockingScript, satoshis) => {
       const { tx } = await wallet.createAction({
         description: 'Fund a BOLT token transaction',
