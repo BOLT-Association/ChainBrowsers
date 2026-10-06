@@ -49,6 +49,11 @@
   showTransport(); setTimeout(showTransport, 1500)
   function wallet (method, args) {
     showTransport()
+    // A method named BOLT.<name> goes to window.BOLT, the token interface; its args are a list.
+    if (method.indexOf('BOLT.') === 0) {
+      if (typeof window.BOLT !== 'object' || !window.BOLT) return Promise.reject(new Error('this browser has no window.BOLT'))
+      return window.BOLT[method.slice(5)].apply(null, args || [])
+    }
     if (hasCwi()) return window.CWI[method](args)
     return fetch('http://localhost:3321/' + method, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(args || {})
