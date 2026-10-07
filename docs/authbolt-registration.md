@@ -58,15 +58,17 @@ that data, and the user, not the site, decides which token answers it.
      back as change);
    - behind a switch, the user's other tokens, each showing which sites it is already linked to.
 
-   On approval the wallet presents the chosen token with the hash as data and
-   `to = hash160(appPubKey)`, and returns only the package. Addressing it to the app means it cannot
-   be replayed to another verifier.
+   On approval the wallet presents the chosen token as a self-transfer: the settle pays the holder's
+   own key, and the commit carries the auth data (the appPubKey and the challenge hash), which the
+   settle covers. It returns only the package. Because the data names the app and the challenge, the
+   package cannot be replayed to another verifier, and the token is never handed to the app.
 7. **Verify on the server.** Never trust a verdict from the page. The server reads the issuer key
    from the package and runs b017's `verifyAndBroadcast` with that key as the trusted issuer, Arcade
    as broadcaster and Arcade's headers as the chain tracker. Accept only if:
    - the result is a presentation of an AuthBOLT;
    - the data equals the server's hash;
-   - the owner equals `hash160(appPubKey)`;
+   - the data names this app's appPubKey;
+   - the settle pays the same key the commit spent from (a self-transfer);
    - the nonce is unused and not expired;
    - the issuerPubKey is not already registered to another account.
 8. **Register.** Record the issuerPubKey as the account's identity. Mark the nonce used.

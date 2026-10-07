@@ -6,7 +6,7 @@ import { Hash, PrivateKey, Utils } from '@bsv/sdk'
 import { fromBeef } from 'b017'
 import { BoltHandler, brc100Core, memoryStore } from '../src/index.js'
 import {
-  AUTH_DATA_BYTES, IDENTITY_PROTOCOL, IdentityWallet, appPkh, decodeAuthData, encodeAuthData, verifyIdentity
+  AUTH_DATA_BYTES, IDENTITY_PROTOCOL, IdentityWallet, decodeAuthData, encodeAuthData, verifyIdentity
 } from '../src/identity.js'
 import { pretendChain, protoWalletOn } from './harness.mjs'
 
@@ -56,7 +56,7 @@ test('create: each identity is a new AuthBOLT under its own key, and its funding
   assert.equal((await ids.identities()).length, 2)
 })
 
-test('present: tags the identity for the app, and a relying party learns the issuer, the data and that it was addressed to it', async () => {
+test('present: tags the identity for the app, and a relying party learns the issuer and the data; the token stays with its holder', async () => {
   const chain = pretendChain()
   const { ids } = identityOn(chain)
   const site = verifierOn(chain)
@@ -70,6 +70,8 @@ test('present: tags the identity for the app, and a relying party learns the iss
   assert.equal(r.ok, true, r.reason)
   assert.equal(r.issuer, id.issuer)
   assert.equal(r.purpose, 'register')
+  const v = await site.verify(pkg, { issuer: id.issuer })
+  assert.equal(v.owner, v.holder, 'a presentation is a self-transfer')
 
   assert.deepEqual((await ids.forApp({ domain: SITE, appPubKey: app })).map((t) => t.id), [id.id])
   assert.deepEqual(await ids.forApp({ domain: 'other.example', appPubKey: app }), [], 'another site sees nothing')
@@ -101,23 +103,24 @@ test('verifyIdentity: refuses other data, another app, a transfer, and junk', as
 
   const other = encodeAuthData({ purpose: 'signin', appPubKey: app, challengeHash: challenge('other') })
   assert.match((await verifyIdentity({ handler: site, package: pkg, appPubKey: app, data: other })).reason, /data/)
-  // The same package shown to a different app: the data names this app, and the owner is this app's.
+  // The same package shown to a different app: the data names this app.
   const app2 = appKey()
   assert.equal((await verifyIdentity({ handler: site, package: pkg, appPubKey: app2, data })).ok, false)
   assert.equal((await verifyIdentity({ handler: site, package: ['00'], appPubKey: app, data })).ok, false)
 })
 
-test('verifyIdentity: the right data addressed to another verifier is refused', async () => {
+test('verifyIdentity: the right data on a presentation that moves the token to another key is refused', async () => {
   const chain = pretendChain()
   const { ids, store, wallet } = identityOn(chain)
   const site = verifierOn(chain)
   const app = appKey()
   const id = await ids.create()
   const data = encodeAuthData({ purpose: 'signin', appPubKey: app, challengeHash: challenge() })
-  // Built by hand with the identity's key, as a wallet that ignored the rule would: right data, wrong address.
+  // Built by hand with the identity's key, as a wallet that ignored the rule would: right data, but the
+  // settle pays the app's key instead of the holder's own.
   const raw = new BoltHandler({ core: brc100Core({ wallet, broadcast: chain.broadcast, store, protocolID: IDENTITY_PROTOCOL }), keyId: id.holderKeyId })
-  const { package: elsewhere } = await raw.present(id.id, { data, to: appPkh(appKey()) })
-  assert.match((await verifyIdentity({ handler: site, package: elsewhere, appPubKey: app, data })).reason, /another verifier/)
+  const { package: elsewhere } = await raw.present(id.id, { data, to: Hash.hash160(Utils.toArray(app, 'hex')) })
+  assert.match((await verifyIdentity({ handler: site, package: elsewhere, appPubKey: app, data })).reason, /self-transfer/)
 })
 
 test('refresh: silent only for an app the user chose to stay signed in to, and only for keep-alive data', async () => {
@@ -162,9 +165,4 @@ test('rotate: a self-transfer to a new holder key; the issuer, the tags and the 
   const r = await verifyIdentity({ handler: site, package: pkg, appPubKey: app, data })
   assert.equal(r.ok, true, r.reason)
   assert.equal(r.issuer, id.issuer, 'the app recognises the same identity')
-})
-
-test('appPkh is hash160 of the app key', () => {
-  const app = appKey()
-  assert.equal(appPkh(app), hex(Hash.hash160(Utils.toArray(app, 'hex'))))
 })

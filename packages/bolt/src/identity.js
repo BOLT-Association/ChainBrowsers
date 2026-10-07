@@ -10,8 +10,10 @@
 //   [tag 1][app public key 33][challenge hash 32]
 // tag 0x01 register, 0x02 sign in, 0x03 keep a session alive. The app's server makes the data from
 // its own challenge; the wallet reads the tag and the app key to word its prompt, and refuses data
-// that names another app. A presentation is addressed to hash160(app key), so it is no use to any
-// other verifier.
+// that names another app. A presentation is a self-transfer: the settle pays the holder's own key,
+// and the app key is bound by the auth data the commit carries and the settle covers. So it is no use
+// to any other verifier (the data names this app and this challenge), and it never hands the token
+// to the app.
 //
 // What the wallet remembers about an identity lives in the token row's attributes, under `wallet`:
 //   { issuerKeyId, holderKeyId, apps: [{ domain, appPubKey, keepSignedIn, linkedAt }] }
@@ -42,9 +44,6 @@ function checkAppKey (appPubKey) {
   }
   return appPubKey.toLowerCase()
 }
-
-/** The 20-byte hash a presentation to this app is addressed to (hex). */
-export const appPkh = (appPubKey) => hex(Hash.hash160(bytesOf(checkAppKey(appPubKey))))
 
 /** Auth data for a presentation (hex). */
 export function encodeAuthData ({ purpose, appPubKey, challengeHash }) {
@@ -210,7 +209,7 @@ export class IdentityWallet {
   async #presentation (record, app, data) {
     const token = await this.#token(record)
     const keyId = record.attributes.wallet.holderKeyId
-    const toPkh = bytesOf(appPkh(app))
+    const toPkh = token.owner // a self-transfer; the app is named in the auth data
     const auth = bytesOf(data)
     const commit = await signWith(this.core, keyId, (key) => buildCommit({ token, key, toPkh, auth }))
     const settle = await signWith(this.core, keyId, (key) => buildSettle({ token, commit, key, toPkh }))
@@ -271,7 +270,7 @@ export class IdentityWallet {
  * The relying party's check of an identity presentation. Users are the issuers, so the issuer is
  * read from the package; the app compares it with the account it has on record.
  * @param handler    a BoltHandler (its core's broadcaster and headers judge the anchor)
- * @param appPubKey  this app's key: the data must name it and the presentation must be addressed to it
+ * @param appPubKey  this app's key: the data must name it (the presentation is a self-transfer)
  * @param data       the auth data this app issued for this challenge (hex)
  * @returns `{ ok, reason? }`, and when ok `{ issuer, holder, tokenId, purpose, anchors }`
  */
@@ -296,6 +295,6 @@ export async function verifyIdentity ({ handler, package: pkg, appPubKey, data }
   if (!r.ok) return { ok: false, reason: r.reason }
   if (r.kind !== 'presentation' || r.type !== 'AuthBOLT') return { ok: false, reason: 'not an AuthBOLT presentation' }
   if (r.data !== data.toLowerCase()) return { ok: false, reason: 'the presentation carries other data than this challenge' }
-  if (r.owner !== appPkh(app)) return { ok: false, reason: 'the presentation is addressed to another verifier' }
+  if (r.owner !== r.holder) return { ok: false, reason: 'a presentation must be a self-transfer: it moves the token to another key' }
   return { ok: true, issuer: r.issuer, holder: r.holder, tokenId: r.tokenId, purpose: decoded.purpose, anchors: r.anchors }
 }

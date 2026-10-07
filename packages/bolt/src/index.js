@@ -1,5 +1,5 @@
 export { BoltHandler } from './handler.js'
-export { AUTH_DATA_BYTES, IDENTITY_PROTOCOL, IdentityWallet, appPkh, decodeAuthData, encodeAuthData, verifyIdentity } from './identity.js'
+export { AUTH_DATA_BYTES, IDENTITY_PROTOCOL, IdentityWallet, decodeAuthData, encodeAuthData, verifyIdentity } from './identity.js'
 export { BOLT_PROTOCOL, arcadeBroadcaster, brc100Core, memoryStore } from './core.js'
 export { NFT_TYPES, readToken } from './nft.js'
 export { signWith } from './signer.js'
