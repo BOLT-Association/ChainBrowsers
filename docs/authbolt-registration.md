@@ -1,0 +1,132 @@
+# Registration gated on an AuthBOLT
+
+Status: design note, 2026-10-07. Nothing here is built or tested. It describes how a site requires
+proof of ownership of an AuthBOLT before it accepts a registration (a username, with an optional
+email, X or LinkedIn account), and what Hodos must change to support it.
+
+## The model
+
+AuthBOLT targets BRC-100 identity.
+
+- **Users are the issuers; apps are the verifiers.** A user mints their own AuthBOLTs. There is no
+  trusted-issuer list: an app learns a user's issuer key at registration and recognises it afterwards.
+- **Every new token uses a new key.** A user may keep a default token or mint one per site. Separate
+  keys keep tokens on different sites unlinkable unless the user links them, on or off chain.
+- **AuthBOLTs only move to self.** The user can rotate the holder pubKeyHash with a self-transfer;
+  the recorded issuerPubKey never changes. That constant key is the account's identity at the app.
+- **Sites list; users mint and present.** A site may list only the token(s) tagged for it by its
+  appPubKey. It may not mint or present. Both happen in the wallet's own UI, under the user's control.
+
+## Can a server detect the wallet?
+
+No. Neither Hodos nor BSV Browser adds a request header, a user-agent marker or a handshake that a
+site's server could start. Detection happens in the page, and the page tells the server.
+
+- **The page can see the wallet.** Hodos injects `window.CWI` and `window.BOLT` only into the main
+  frame of external `https://` pages (`cef-native/src/handlers/simple_render_process_handler.cpp`).
+  BSV Browser injects `window.CWI` but refuses wallet access to pages served from an IP address.
+  `typeof window.BOLT !== 'undefined'` is the presence test.
+- **HTTP 402 is the only thing a server can trigger.** Both browsers pay a 402 response natively
+  (BRC-121). That is a payment, not a presence check, and in BSV Browser it is the path described in
+  `docs/issues/bsv-browser-402-originator.md`. Do not build on it.
+- **BRC-104 mutual auth runs from the page.** For an external server the handshake is page
+  JavaScript calling the wallet. It is also how the wallet can learn that a site really holds the
+  appPubKey it names (below).
+- **BSV Browser has no `window.BOLT` in a shipped build.** It exists only on the fork's `window-bolt`
+  branch and has not run on a device.
+
+## Registration flow
+
+An AuthBOLT presentation is an unfunded commit and settle that is never broadcast and carries up to
+75 bytes of data. The app's server issues a challenge, the hash of the exact registration goes into
+that data, and the user, not the site, decides which token answers it.
+
+1. **Detect.** On load the page checks for `window.BOLT`. If it is missing, show "open in Hodos" and
+   keep the form disabled.
+2. **Look for an existing token.** The page calls `BOLT.list()`. The wallet returns only tokens
+   tagged with this app's appPubKey: none for a new user, the linked token for a returning one.
+3. **Fill the form.** Username, and optionally email, X handle, LinkedIn profile.
+4. **Get a challenge.** The page posts the form to the server. The server stores a pending
+   registration and returns a nonce and an expiry.
+5. **Bind.** Both sides compute SHA-256 over a canonical statement: the app's domain, the
+   appPubKey, the nonce, the expiry and the form fields. 32 bytes, under the 75-byte limit.
+6. **Ask the user.** The page asks the wallet for a presentation of the hash to the appPubKey. The
+   page cannot present: the request only opens the wallet's own prompt, which offers
+   - the token already tagged for this app, when there is one;
+   - otherwise "create an identity for this site", which mints a token under a new key and tags it
+     with the appPubKey (a funded mint: a 1-sat token output plus the miner fee; the funding comes
+     back as change);
+   - behind a switch, the user's other tokens, each showing which sites it is already linked to.
+
+   On approval the wallet presents the chosen token with the hash as data and
+   `to = hash160(appPubKey)`, and returns only the package. Addressing it to the app means it cannot
+   be replayed to another verifier.
+7. **Verify on the server.** Never trust a verdict from the page. The server reads the issuer key
+   from the package and runs b017's `verifyAndBroadcast` with that key as the trusted issuer, Arcade
+   as broadcaster and Arcade's headers as the chain tracker. Accept only if:
+   - the result is a presentation of an AuthBOLT;
+   - the data equals the server's hash;
+   - the owner equals `hash160(appPubKey)`;
+   - the nonce is unused and not expired;
+   - the issuerPubKey is not already registered to another account.
+8. **Register.** Record the issuerPubKey as the account's identity. Mark the nonce used.
+
+**Signing in later** is the same challenge without the form: the server accepts a presentation whose
+issuer key equals the recorded one, whatever holder pubKeyHash it carries now.
+
+The optional links need their own proof: an email link, and OAuth or a posted code for X and
+LinkedIn. Hashing them into the statement shows only that the token holder chose those values.
+
+```
+page                        wallet (user)                    server                  Arcade
+ | window.BOLT present?        |                                |                       |
+ | BOLT.list() --------------> | tokens tagged for this app     |                       |
+ | POST /register (form) ---------------------------------------> pending, nonce        |
+ | <---------------------------------------------- nonce, expiry |                       |
+ | hash = H(domain|appPubKey|nonce|expiry|form)                  |                       |
+ | request presentation -----> | prompt: use / create / switch  |                       |
+ |                             | present(token, hash, to app)   |                       |
+ | <--------------- package -- |                                |                       |
+ | POST /register/proof -----------------------------------------> verifyAndBroadcast --> anchor seen
+ |                                                              | issuer, data, owner,  |
+ |                                                              | nonce; record issuer  |
+ | <---------------------------------------------------- account |                       |
+```
+
+## Costs
+
+| Action | Network cost |
+|---|---|
+| Mint a token | one funded transaction: a 1-sat output plus the miner fee |
+| Rotate the holder key (self-transfer) | a funded commit and settle, both broadcast |
+| Present | none; nothing is broadcast |
+
+## What Hodos must change
+
+`packages/bolt` and the Hodos rails do not match this model yet.
+
+- **A new key per token.** `BoltHandler` signs every mint, transfer and presentation with one fixed
+  key (`keyId = '1'`), so every token shares an issuer and holder key. Derive each token's issuer key
+  separately, for example BRC-42 with the appPubKey as counterparty, so the mnemonic can re-derive it.
+- **Scope the list to the app.** `BOLT.list` and `/boltTokens` return every token to any approved
+  site, without a prompt. They must return only tokens tagged with the caller's appPubKey.
+- **Prove the appPubKey.** A page could claim another app's appPubKey to see its tokens. The wallet
+  should accept the tag only once the site has proved it holds the key (BRC-104), or bind it to the
+  requesting domain, which Hodos stamps natively.
+- **Remove mint and present from the page.** Both are page methods today. Replace them with the
+  request in step 6, served by a native wallet prompt. That moves the handler to the trusted side
+  (the BSV Browser model). In Hodos today it runs in the page and asks the wallet for raw signatures,
+  which is why the prompt reads "use a protocol: bolt token" rather than what is being done.
+- **Back up the tokens.** They are in the wallet database (V28 `bolt_tokens`), and a copy of the
+  database file includes them, but the encrypted backup, the on-chain backup and the JSON export skip
+  that table. A mnemonic recovery would restore the keys but not the tokens, whose transaction data
+  cannot be rebuilt; with per-site identities that loses every account.
+
+## Remaining gaps
+
+- **An old holder key can still present.** Verification checks that the token's anchor was seen by
+  the network, not that it is unspent (Arcade has no outspend endpoint). Under self-transfer every old
+  holder key is the user's own, so this matters only if one of those keys leaks. From code reading,
+  not tested.
+- **Linking tokens is out of scope here.** An app sees only its own token. Whether a site may ask a
+  user to prove a link between tokens, and how, is not designed.
