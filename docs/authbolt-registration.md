@@ -1,8 +1,8 @@
 # Registration gated on an AuthBOLT
 
-Status: design note, 2026-10-07. Nothing here is built or tested. It describes how a site requires
-proof of ownership of an AuthBOLT before it accepts a registration (a username, with an optional
-email, X or LinkedIn account), and what Hodos must change to support it.
+Status: built and verified live in Hodos on 2026-10-07 (see "What was built" at the end). It
+describes how a site requires proof of ownership of an AuthBOLT before it accepts a registration (a
+username, with an optional email, X or LinkedIn account), and what each part does.
 
 ## The model
 
@@ -101,9 +101,9 @@ page                        wallet (user)                    server             
 | Rotate the holder key (self-transfer) | a funded commit and settle, both broadcast |
 | Present | none; nothing is broadcast |
 
-## What Hodos must change
+## What Hodos had to change (done, see the end)
 
-`packages/bolt` and the Hodos rails do not match this model yet.
+Before this work `packages/bolt` and the Hodos rails did not match this model:
 
 - **A new key per token.** `BoltHandler` signs every mint, transfer and presentation with one fixed
   key (`keyId = '1'`), so every token shares an issuer and holder key. Derive each token's issuer key
@@ -130,3 +130,77 @@ page                        wallet (user)                    server             
   not tested.
 - **Linking tokens is out of scope here.** An app sees only its own token. Whether a site may ask a
   user to prove a link between tokens, and how, is not designed.
+
+## Implementation plan (decided 2026-10-07)
+
+Decisions: the server check is a Node sidecar wrapping b017's verifier; AuthBOLT replaces passwords
+in PeerLoop; "liveness" covers the token still being current, sessions kept alive by fresh
+presentations, and presence tied to the token identity; Hodos gets the full model first.
+
+**The data a presentation carries** (66 bytes; priv-chain `PLAN_peerloop.md` P2 extended):
+
+| Bytes | Field |
+|---|---|
+| 1 | tag: `0x01` register, `0x02` sign in, `0x03` keep a session alive |
+| 33 | the app's public key |
+| 32 | SHA-256 of the server's challenge statement (purpose, origin, nonce, expiry, form) |
+
+The server returns these 66 bytes; the page passes them to the wallet; the wallet reads the tag and
+the app key to word its prompt and refuses data whose app key is not the one asked for.
+
+**Who does what**
+
+```
+PeerLoop page ──/bolt/request──> Hodos C++ ──overlay──> trusted prompt (React + packages/bolt)
+     ▲                              │                     │ wallet calls as Hodos itself
+     └──────── package ─────────────┘ <── bolt_result ────┘
+PeerLoop page ──package──> p2pd ──/verify──> bolt-verify sidecar (b017) ──> Arcade (anchor seen?)
+                             ▲                        │
+                             └── is this merkle root in your verified chain? ──┘
+p2pd header chain <── candidate headers ── Arcade chaintracks (+ tip stream)
+```
+
+**Chain trust.** Neither side trusts a server's word about the chain. Hodos runs in spv mode: it
+takes headers from Arcade's chaintracks and keeps only what passes its own checks. PeerLoop does the
+same in p2pd (plan item t38): a verified header chain with the Hodos rules (layout, proof of work,
+regtest's fixed difficulty, pinned genesis, linkage, 2 h future limit, most work wins, reorgs),
+synced from chaintracks and woken by its tip stream. The sidecar asks p2pd whether a merkle root is
+in that chain; it never asks Arcade.
+
+- **packages/bolt:** an identity module: the data format; a key per AuthBOLT (its own BRC-43
+  protocol, keyID kept with the token); app tags and keep-signed-in grants in the token's
+  attributes; presenting for an app after checking the data names that app. A sidecar server
+  (`bolt-verify`) for relying parties. `mint` and `present` leave the page interface.
+- **Hodos Rust:** `/boltTokens` shows an external site only the AuthBOLTs tagged for it and refuses
+  its writes to AuthBOLT rows; the identity protocol is refused to external sites; `bolt_tokens`
+  joins the backups.
+- **Hodos C++:** `/bolt/request` from a page opens the prompt and answers the page when the prompt
+  sends `bolt_result`; a keep-alive request goes to the preloaded overlay without showing it.
+- **Hodos frontend:** the prompt (use this site's identity, create one, or switch), a vendored
+  bundle of the identity module, and an Identities list in the wallet panel.
+- **p2pd:** challenges and register / sign-in / refresh routes calling the sidecar; accounts keyed
+  by the issuer key; no passwords; short sessions refreshed by presentations; the identity shown
+  on a person's profile. The lab uses a stand-in verifier and a stand-in `window.BOLT`, since its
+  browsers have no wallet; the real path is tested with Hodos on the regtest stack.
+
+## What was built (2026-10-07)
+
+Verified live: `node tests/authbolt/peerloop.live.mjs` registers, signs in, keeps a session alive
+and signs in again on PeerLoop in the real Hodos browser (spv mode on the regtest stack), clicking
+Hodos's own prompt through DevTools. With `NC_NO_VERIFIER=1` it fails at registration, as it must.
+Screenshots and logs: `tests/cross-wallet/out/authbolt/`.
+
+| Where | What |
+|---|---|
+| `packages/bolt/src/identity.js` | The auth data format; `IdentityWallet` (a key per identity under the BRC-43 protocol `authbolt identity`, app links and keep-signed-in grants in `attributes.wallet`, present only with data naming the asking app, silent refresh only with a grant, `rotate` to a new holder key); `verifyIdentity` for a relying party |
+| `packages/bolt/src/verify-server.js`, `bin/bolt-verify.mjs` | The sidecar: `POST /verify` with a shared secret; roots asked of the app server's own header chain (`HEADERS_URL`), never of Arcade |
+| `packages/bolt/src/identity-service.js` | What Hodos's prompt runs, bundled to `frontend/src/vendor/bolt-identity.js` (`npm run bundle:identity`) |
+| `packages/bolt/src/page.js`, `browser.js` | A page cannot mint or present an AuthBOLT; `requestPresentation` goes to `POST /bolt/request` |
+| Hodos `rust-wallet` | `/boltTokens` shows a site only the identities linked to it and refuses its identity writes; `op: annotate` from Hodos's UI only; the identity protocol is refused to every site (`permission_service/identity_guard.rs`); `bolt_tokens` is in the backups |
+| Hodos `cef-native` | `/bolt/request` is checked (`BoltRequest.h`), held, and answered by the prompt's `bolt_result` (approval overlay only, `IpcAuth.h`) or a 5-minute timeout; a keep-alive goes to the preloaded overlay's `window.boltSilent` without showing it |
+| Hodos `frontend` | `BoltIdentityPrompt.tsx`: this site's identity, a new one, or another (with the sites each is linked to), and "keep me signed in"; the identity code loads only when a request needs it |
+| p2p | No passwords. `internal/authbolt` (challenges, auth data, the sidecar client), routes `/api/auth/challenge`, `register`, `signin`, `refresh`; accounts keyed by the issuer key with optional email, X and LinkedIn; 30-minute sessions renewed by keep-alives; `internal/headers`, its own verified header chain (Hodos's rules) synced from chaintracks and its tip stream, answering the sidecar on a loopback port |
+
+Not built yet: an Identities list in the Hodos wallet panel (see, unlink, rotate, revoke
+keep-signed-in), linking identities to each other, mainnet header rules (both chains are regtest
+only), BSV Browser (set aside by the user).

@@ -12,7 +12,9 @@
     "vendor": "node scripts/vendor-b017.mjs",
     "bundle": "node scripts/bundle-shim.mjs",
     "test": "node --test",
-    "bundle:rn": "node scripts/bundle-rn.mjs"
+    "bundle:rn": "node scripts/bundle-rn.mjs",
+    "verify-server": "node bin/bolt-verify.mjs",
+    "bundle:identity": "node scripts/bundle-identity.mjs"
   },
   "dependencies": {
     "@bsv/sdk": "^2.8.11",

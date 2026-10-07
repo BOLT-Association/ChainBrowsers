@@ -42,27 +42,30 @@ test('the script defines a frozen window.BOLT with the page methods, in the main
   assert.equal(pageIn(hostOn(chain), { child: true }).BOLT, undefined)
 })
 
-test('a page mints and presents; the host prompts with what is asked and the origin it knows', async () => {
+test('a page cannot mint or present an identity: AuthBOLTs belong to the wallet, behind its own prompt', async () => {
+  const chain = pretendChain()
+  const host = hostOn(chain)
+  const page = pageIn(host, { origin: 'site.example' }).BOLT
+  assert.equal(page.present, undefined, 'there is no present for a page')
+  await assert.rejects(page.mint(), /minted by the wallet/)
+  await assert.rejects(page.mint({ type: 'AuthBOLT' }), /minted by the wallet/)
+  // This host has no identity prompt yet: asking for a presentation says so, and nothing is signed.
+  await assert.rejects(page.requestPresentation({ appPubKey: '02' + 'ab'.repeat(32), data: '01', purpose: 'signin' }), /cannot present an identity/)
+  assert.equal(host.prompts.length, 0, 'nothing was asked of the user')
+})
+
+test('a page mints an NFT; the host prompts with what is asked and the origin it knows', async () => {
   const chain = pretendChain()
   const issuerHost = hostOn(chain)
   const issuer = pageIn(issuerHost, { origin: 'issuer.example' }).BOLT
 
-  const key = await issuer.getKey()
+  await issuer.getKey()
   assert.equal(issuerHost.prompts.length, 0, 'getKey does not ask')
 
-  const minted = await issuer.mint({ type: 'AuthBOLT' })
+  const minted = await issuer.mint({ type: 'MinSimpleBOLT' })
   assert.match(minted.id, /^[0-9a-f]{64}\.0$/)
   assert.deepEqual(issuerHost.prompts.map((p) => [p.origin, p.method]), [['issuer.example', 'mint']])
-  assert.match(issuerHost.prompts[0].summary, /mint a new AuthBOLT/)
-
-  const { package: pkg } = await issuer.present(minted.id, { data: 'c0ffee' })
-  assert.match(issuerHost.prompts[1].summary, /show token .* with the data c0ffee/)
-
-  const site = pageIn(hostOn(chain), { origin: 'site.example' }).BOLT
-  const shown = await site.verify(pkg, { issuer: key.publicKey })
-  assert.equal(shown.ok, true, shown.reason)
-  assert.equal(shown.data, 'c0ffee')
-  assert.equal('txs' in shown, false) // a page gets plain data
+  assert.match(issuerHost.prompts[0].summary, /mint a new MinSimpleBOLT/)
 
   // what crossed from the page is only method names and arguments
   assert.ok(issuerHost.posted.every((m) => m.type === 'BOLT' && typeof m.id === 'string' && Array.isArray(m.args)))
@@ -87,11 +90,12 @@ test('fungible pay between two apps, each prompting its own user', async () => {
   assert.deepEqual((await issuer.list()).map((r) => r.amount), ['700'])
 })
 
-test('when the user declines, the call is refused and nothing is signed or broadcast', async () => {
+test('a page asking to mint an AuthBOLT is refused before the user is asked: nothing is signed or broadcast', async () => {
   const chain = pretendChain()
-  const host = hostOn(chain, { answer: false })
+  const host = hostOn(chain, { answer: true }) // even a user who would say yes is never asked
   const page = pageIn(host).BOLT
-  await assert.rejects(page.mint({ type: 'AuthBOLT' }), /BOLT: the user declined/)
+  await assert.rejects(page.mint({ type: 'AuthBOLT' }), /minted by the wallet/)
+  assert.equal(host.prompts.length, 0)
   assert.deepEqual(host.calls, [])
   assert.equal(chain.sent.length, 0)
 })

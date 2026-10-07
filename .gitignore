@@ -9,3 +9,4 @@ browsers/*/
 !browsers/README.md
 tests/cross-wallet/out/
 /b017/
+/p2p/

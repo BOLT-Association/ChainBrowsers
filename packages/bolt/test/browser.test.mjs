@@ -14,7 +14,7 @@ import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import vm from 'node:vm'
 import { Hash, PrivateKey, ProtoWallet, Script, Transaction, Utils } from '@bsv/sdk'
-import { PAGE_METHODS } from '../src/index.js'
+import { BoltHandler, IDENTITY_PROTOCOL, IdentityWallet, PAGE_METHODS, brc100Core, encodeAuthData, verifyIdentity, walletBroadcaster, walletStore } from '../src/index.js'
 import { pretendChain } from './harness.mjs'
 
 const bundlePath = join(dirname(fileURLToPath(import.meta.url)), '..', 'dist', 'bolt-shim.js')
@@ -28,7 +28,7 @@ function fakeWallet (chain) {
   const table = new Map() // outpoint -> row
   const seen = []
   let clock = 1000
-  const tokens = ({ op, row, outpoint, status = 'held', issuer, type }) => {
+  const tokens = ({ op, row, outpoint, status = 'held', issuer, type, wallet }) => {
     if (op === 'put') {
       const had = table.get(row.outpoint)
       if (had) {
@@ -52,6 +52,11 @@ function fakeWallet (chain) {
       if (spent) { r.status = 'spent'; r.updated_at = ++clock }
       return { ok: true, spent }
     }
+    if (op === 'annotate') { // the wallet's own notes (identity keys, app links); Hodos takes it from its own UI only
+      const r = table.get(outpoint)
+      if (r) r.attributes = JSON.stringify({ ...JSON.parse(r.attributes || '{}'), wallet })
+      return { ok: true }
+    }
     return { error: `unknown op ${op}` }
   }
   const broadcast = async ({ tx: hex }) => {
@@ -70,14 +75,35 @@ function fakeWallet (chain) {
       return { txid: tx.id('hex'), tx: tx.toAtomicBEEF() }
     },
     boltBroadcast: broadcast,
-    boltTokens: async (a) => tokens(a)
+    boltTokens: async (a) => tokens(a),
+    // The wallet's own identity prompt (Hodos answers /bolt/request natively): here the person
+    // always picks their first identity.
+    'bolt/request': async ({ appPubKey, data }) => {
+      const [first] = await ids.identities()
+      return ids.present({ id: first.id, domain: 'site.example', appPubKey, data })
+    }
   }
+  // The wallet's trusted side: identities under their own keys, kept in the same table.
+  const direct = async (endpoint, args) => json(await endpoints[endpoint.slice(1)](json(args ?? {})))
+  const ids = new IdentityWallet({
+    core: brc100Core({
+      wallet: Object.fromEntries(['getPublicKey', 'createSignature', 'getHeaderForHeight', 'createAction'].map((m) => [m, (a) => endpoints[m](a)])),
+      broadcast: walletBroadcaster(direct),
+      store: walletStore(direct),
+      protocolID: IDENTITY_PROTOCOL
+    })
+  })
   const walletCall = async (method, endpoint, args) => {
     seen.push([method, endpoint])
     if (!endpoints[method]) return { error: `no such endpoint ${endpoint}` }
     return json(await endpoints[method](json(args ?? {})))
   }
-  return { walletCall, table, seen }
+  return { walletCall, table, seen, ids }
+}
+
+/** A relying party (an app's server): a handler on the pretend chain, with no keys of its own in play. */
+function walletOnSite (chain) {
+  return new BoltHandler({ core: brc100Core({ wallet: { getHeaderForHeight: async ({ height }) => ({ header: chain.headers.get(height) }) }, broadcast: chain.broadcast }) })
 }
 
 /** A page: a fresh JS realm that loads the bundle and installs BOLT over `wallet`'s bridge. */
@@ -99,6 +125,21 @@ test('the bundle installs a frozen window.BOLT with exactly the page methods', {
   assert.deepEqual(Object.keys(sandbox.BOLT).sort(), Object.keys(PAGE_METHODS).sort())
   assert.throws(() => { sandbox.BOLT = 1 }, 'BOLT is non-writable')
   assert.ok(Object.isFrozen(sandbox.BOLT))
+})
+
+test('requestPresentation rides the bridge to the own prompt of the wallet (/bolt/request); mint of an AuthBOLT never leaves the page', { skip }, async () => {
+  const asked = []
+  const wallet = { walletCall: async (method, endpoint, args) => { asked.push([method, endpoint, args]); return { package: ['c', 's'] } } }
+  const bolt = page(wallet)
+  const req = { appPubKey: '02' + 'ab'.repeat(32), data: '01' + 'cd'.repeat(65), purpose: 'register', silent: false }
+  assert.deepEqual(await bolt.requestPresentation(req), { package: ['c', 's'] })
+  assert.deepEqual(asked, [['bolt/request', '/bolt/request', req]])
+  assert.equal(bolt.present, undefined)
+  await assert.rejects(bolt.mint(), /minted by the wallet/)
+  await assert.rejects(bolt.mint({ type: 'AuthBOLT' }), /minted by the wallet/)
+  assert.equal(asked.length, 1, 'refused before the wallet was asked')
+  const declining = { walletCall: async () => ({ error: 'BOLT: the user declined' }) }
+  await assert.rejects(page(declining).requestPresentation(req), /declined/)
 })
 
 test('getKey() rides the bridge to the BRC-100 endpoint; a wallet error is thrown', { skip }, async () => {
@@ -149,18 +190,24 @@ test('tokens live in the wallet: a reloaded page (a new realm) still holds and c
   const issuerWallet = fakeWallet(chain)
   const first = page(issuerWallet)
   const issuerKey = (await first.getKey()).publicKey
-  const { id } = await first.mint({ type: 'AuthBOLT' })
+  await assert.rejects(first.mint({ type: 'AuthBOLT' }), /minted by the wallet/)
+  // The identity is made by the wallet itself (its prompt), under a key of its own, not the page's.
+  const identity = await issuerWallet.ids.create()
+  assert.notEqual(identity.issuer, issuerKey, 'an identity has its own key')
 
   const reloaded = page(issuerWallet) // same wallet, new page: nothing carried over in page memory
   const rows = await reloaded.list()
   assert.equal(rows.length, 1)
-  assert.equal(rows[0].id, id)
-  assert.equal(rows[0].issuer, issuerKey)
+  assert.equal(rows[0].id, identity.id)
+  assert.equal(rows[0].issuer, identity.issuer)
 
-  // and it can still present the token it did not mint in this realm
-  const site = page(fakeWallet(chain))
-  const shown = await site.verify((await reloaded.present(id, { data: 'c0ffee' })).package, { issuer: issuerKey })
+  // The page cannot present it; it asks the wallet, and an app verifies what comes back.
+  assert.equal(reloaded.present, undefined)
+  const appPubKey = PrivateKey.fromRandom().toPublicKey().toString()
+  const data = encodeAuthData({ purpose: 'signin', appPubKey, challengeHash: 'ab'.repeat(32) })
+  const { package: pkg } = await reloaded.requestPresentation({ appPubKey, data, purpose: 'signin', silent: false })
+  const site = walletOnSite(chain)
+  const shown = await verifyIdentity({ handler: site, package: pkg, appPubKey, data })
   assert.equal(shown.ok, true, shown.reason)
-  assert.equal(shown.kind, 'presentation')
-  assert.equal(shown.data, 'c0ffee')
+  assert.equal(shown.issuer, identity.issuer)
 })

@@ -20,7 +20,12 @@ export function memoryStore () {
     put: async (record) => { records.set(record.id, record) },
     get: async (id) => records.get(id),
     list: async () => [...records.values()],
-    delete: async (id) => { records.delete(id) }
+    delete: async (id) => { records.delete(id) },
+    /** The wallet's own notes on a token (attributes.wallet); the token data is left as stored. */
+    annotate: async (id, wallet) => {
+      const r = records.get(id)
+      if (r) records.set(id, { ...r, attributes: { ...r.attributes, wallet } })
+    }
   }
 }
 

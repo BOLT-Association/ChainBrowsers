@@ -129,17 +129,20 @@ test('a page reaches the handler through the dispatcher, and the user is asked b
   assert.equal((await BOLT.list()).length, 1)
   assert.deepEqual(asked, []) // reading asks nothing
 
-  const { package: pkg } = await BOLT.present(tokenId, { data: 'c0de' })
+  assert.equal(BOLT.present, undefined, 'a page cannot present an identity')
+  await assert.rejects(BOLT.mint(), /minted by the wallet/)
+  await BOLT.mint({ type: 'MinSimpleBOLT' })
   assert.equal(asked.length, 1)
   assert.equal(asked[0].origin, 'https://example.com')
-  assert.match(asked[0].summary, /show token .* with the data c0de/)
-  const seen = await pageClient((request) => dispatcher({ handler: site.handler, approve: async () => true })('https://rp.example', request)).verify(pkg)
+  assert.match(asked[0].summary, /mint a new MinSimpleBOLT/)
+  const seen = await pageClient((request) => dispatcher({ handler: site.handler, approve: async () => true })('https://rp.example', request))
+    .verify((await user.handler.present(tokenId, { data: 'c0de' })).package)
   assert.equal(seen.data, 'c0de')
   assert.equal('txs' in seen, false)
 
   answer = false
   await assert.rejects(BOLT.transfer(tokenId, '00'.repeat(20)), /declined/)
-  assert.equal((await BOLT.list()).length, 1)
+  assert.equal((await BOLT.list()).length, 2)
   await assert.rejects(pageClient((r) => serve('https://example.com', { ...r, method: 'core' }))['getKey'](), /unsupported method/)
   await assert.rejects(pageClient((r) => serve('https://example.com', { ...r, method: 'constructor' }))['getKey'](), /unsupported method/)
 })

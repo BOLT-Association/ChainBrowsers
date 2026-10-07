@@ -13,12 +13,18 @@ export const PAGE_METHODS = {
   list: { asks: false },
   verify: { asks: false },
   receive: { asks: true },
-  present: { asks: true },
+  // An identity (AuthBOLT) is shown only through the wallet's own prompt, which asks the person and
+  // chooses the token; the page gets the presentation and nothing else. A page cannot present.
+  requestPresentation: { asks: false },
   transfer: { asks: true },
   pay: { asks: true },
   melt: { asks: true },
   mint: { asks: true }
 }
+
+/** AuthBOLT identities are the wallet's: minted and presented only behind its own prompt. */
+export const IDENTITY_MINT = 'BOLT: AuthBOLT identities are minted by the wallet, not by a page'
+export const isIdentity = (opts) => (opts?.type ?? 'AuthBOLT') === 'AuthBOLT'
 
 /** The object a page sees. */
 export function pageClient (send) {
@@ -36,7 +42,6 @@ const show = (x, n) => String(x ?? '').replace(/[^\x21-\x7e]/g, '').slice(0, n)
 
 const describe = {
   receive: () => 'keep a BOLT token sent to this wallet',
-  present: ([id, opts]) => `show token ${show(id, 8)} to this site${opts?.data ? ` with the data ${show(opts.data, 32)}` : ''}`,
   transfer: ([id, to]) => `transfer token ${show(id, 8)} to ${show(to, 12)}; the token leaves this wallet`,
   pay: ([issuer, amount, to]) => `pay ${show(amount, 40)} of token ${show(issuer, 12)} to ${show(to, 12)}`,
   melt: ([id]) => `melt (destroy) token ${show(id, 8)}; it cannot be recovered`,
@@ -55,6 +60,8 @@ export function dispatcher ({ handler, approve }) {
       const rule = Object.hasOwn(PAGE_METHODS, method) ? PAGE_METHODS[method] : undefined
       if (!rule) return { error: `BOLT: unsupported method ${String(method)}` }
       if (!Array.isArray(args)) return { error: 'BOLT: args must be an array' }
+      if (method === 'mint' && isIdentity(args[0])) return { error: IDENTITY_MINT }
+      if (typeof handler[method] !== 'function') return { error: 'BOLT: this browser cannot present an identity yet' }
       if (rule.asks && !(await approve({ origin, method, summary: describe[method](args) }))) {
         return { error: 'BOLT: the user declined' }
       }

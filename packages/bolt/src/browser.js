@@ -18,7 +18,7 @@
 // Bundled with b017 + @bsv/sdk into one IIFE (scripts/bundle-shim.mjs) and injected by the browser.
 import { BoltHandler } from './handler.js'
 import { brc100Core } from './core.js'
-import { PAGE_METHODS } from './page.js'
+import { IDENTITY_MINT, PAGE_METHODS, isIdentity } from './page.js'
 import { walletBroadcaster, walletStore } from './wallet-rail.js'
 
 /**
@@ -47,6 +47,14 @@ export function installBolt ({ walletCall, trustedIssuers = [], target = globalT
   for (const method of Object.keys(PAGE_METHODS)) {
     api[method] = (...args) => handler[method](...args)
   }
+  // Identities are the wallet's: a page cannot mint one, and asks for a presentation through the
+  // wallet's own prompt (POST /bolt/request, which Hodos answers natively: the person chooses or
+  // creates the identity, and the page receives only the presentation).
+  api.mint = async (opts) => {
+    if (isIdentity(opts)) throw new Error(IDENTITY_MINT)
+    return handler.mint(opts)
+  }
+  api.requestPresentation = (req) => call('/bolt/request', req)
   Object.defineProperty(target, 'BOLT', { value: Object.freeze(api), writable: false, configurable: false, enumerable: true })
   return handler
 }

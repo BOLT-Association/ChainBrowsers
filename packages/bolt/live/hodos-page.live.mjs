@@ -8,7 +8,8 @@
 //   site, user = handlers in this process on plain keys, talking to Arcade themselves: the other
 //           party, who only ever sees the packages the page hands out
 //
-// The page mints an AuthBOLT and presents it; mints a fungible token and pays part of it; and after a
+// The page cannot mint or present an AuthBOLT (identities are the wallet's own, behind its prompt:
+// tests/authbolt/peerloop.live.mjs); it mints a fungible token and pays part of it; and after a
 // reload still holds what it had (the tokens live in the wallet). Driven through the dev build's
 // DevTools port, as a person typing in the console would.
 //
@@ -99,19 +100,11 @@ try {
   assert.equal(key.pubKeyHash, Utils.toHex(Hash.hash160(Utils.toArray(key.publicKey, 'hex'))))
   step(`getKey() from the page: ${key.publicKey.slice(0, 16)}… (the wallet's key, over the bridge)`)
 
-  // --- AuthBOLT: mint in the page, present to a site that checks it independently ---
-  const minted = await inPage('return window.BOLT.mint({ type: "AuthBOLT" })')
-  assert.match(minted.id, /^[0-9a-f]{64}\.0$/)
-  step(`the page minted an AuthBOLT ${minted.id.slice(0, 16)}… (createAction + createSignature from an https origin, broadcast by the wallet)`)
-
-  const site = party([key.publicKey])
-  const challenge = Utils.toHex(Hash.sha256(Utils.toArray(`login ${Date.now()}`, 'utf8')))
-  const shownPkg = await inPage(`return (await window.BOLT.present(${JSON.stringify(minted.id)}, { data: ${JSON.stringify(challenge)} })).package`)
-  const shown = await site.verify(shownPkg)
-  assert.equal(shown.ok, true, shown.reason)
-  assert.equal(shown.kind, 'presentation')
-  assert.equal(shown.data, challenge)
-  step('a site outside the browser verified the page\'s presentation and its challenge')
+  // --- AuthBOLT: identities are the wallet's. The page cannot mint or present one: it can only ask
+  // Hodos's own prompt (requestPresentation), which tests/authbolt/peerloop.live.mjs drives. ---
+  assert.equal(await evaluate(isPage, 'typeof window.BOLT.present'), 'undefined')
+  assert.match(await inPage('try { await window.BOLT.mint({ type: "AuthBOLT" }); return "minted" } catch (e) { return e.message }'), /minted by the wallet/)
+  step('the page cannot mint or present an AuthBOLT (identities belong to the wallet; see tests/authbolt)')
 
   // --- fungible: mint 1000 in the page, pay 300 to a user outside the browser ---
   // (the wallet may hold tokens from earlier runs: amounts are checked against what it had)
@@ -129,15 +122,12 @@ try {
   step('the page minted 1000 and paid 300 by split; a user outside the browser received it')
 
   assert.equal(await fungible(), before + 700n)
-  const holdsAuth = () => inPage(`return (await window.BOLT.list()).some((r) => r.id === ${JSON.stringify(minted.id)})`)
-  assert.equal(await holdsAuth(), true)
 
   // --- the tokens live in the wallet: reload the page and they are still there, and spendable ---
   await evaluate(isPage, 'location.reload(); true').catch(() => {})
   await sleep(1500)
   await pageReady()
   assert.equal(await fungible(), before + 700n)
-  assert.equal(await holdsAuth(), true)
   const paid2 = await inPage(`return (await window.BOLT.pay(${JSON.stringify(key.publicKey)}, "200", ${JSON.stringify(userPub)})).package`)
   assert.equal((await user.receive(paid2)).ok, true)
   assert.equal(await user.balance(key.publicKey), '500')

@@ -80,6 +80,15 @@ Test environment for BOLT / SPV work in Bitcoin-enabled browsers against a local
 - **Tests:** `npm test` in `packages/bolt` (headless, on a pretend chain that runs every script). Live scripts are in `live/` (never under `test/`, or `node --test` runs them with the stack down): `hodos.live.mjs` (wallet HTTP + Arcade), `hodos-page.live.mjs` (a real page in the Hodos browser), `bsv-page.live.mjs` (a real page in the app in the emulator). In Hodos: `cargo test --bin hodos-wallet bolt`. In bsv-browser: `npx jest __tests__/bolt`.
 - **A scripted edit from Python on Windows writes the Windows codepage** unless `encoding='utf-8'` is given, and a `\n` typed inside a tool command reaches Python as a real newline. Both have corrupted files here; use the editor for anything with escapes or non-ASCII.
 
+## AuthBOLT sign-in (PeerLoop + Hodos): what to know before touching it
+
+- **Design and status:** `docs/authbolt-registration.md` (model, flow, what was built where). Users issue their own AuthBOLTs (a new key per identity, BRC-43 protocol `authbolt identity`); apps verify. A page can only `BOLT.list()` its own identities and `BOLT.requestPresentation({appPubKey, data, purpose, silent})`; minting and presenting happen in Hodos's own prompt (`BoltIdentityPrompt.tsx`), never in the page.
+- **The live test is `node tests/authbolt/peerloop.live.mjs`** (stack up, Hodos started with `-BrowserArgs '--host-resolver-rules="MAP app.lab 127.0.0.1"','--ignore-certificate-errors'`, wallet funded, `p2p/results/p2pd.exe` built). It starts its own throwaway rqlite, the bolt-verify sidecar and p2pd over https as `app.lab:8443`, and clicks the prompt through DevTools. `NC_NO_VERIFIER=1` is its negative control (must fail at registration).
+- **Chain trust:** p2pd keeps its own verified header chain (`p2p/internal/headers`, Hodos's regtest rules) and answers the sidecar's root questions on a loopback port (`-internal-addr`, Bearer secret); the sidecar never asks Arcade about roots, only whether an anchor was seen.
+- **PeerLoop has no passwords** (user, 2026-10-07: "No need for passwords, remove"). Old rqlite rows lose the `hash` column on migrate and cannot sign in. Lab browsers (Chromium, Firefox) have no wallet: lab tests check the no-wallet path, never a fake wallet. BSV Browser is set aside for now.
+- **Generated files to refresh after changing `packages/bolt`:** `npm run bundle` (Hodos `BoltShimScript.h`, page shim) and `npm run bundle:identity -- ../../browsers/Hodos-Browser/frontend/src/vendor/bolt-identity.js` (the prompt's identity code). The overlay loads the latter lazily; keep it out of the overlay's main chunk.
+- **The AuthBOLT icon** is the BOLT Association's mark from boltassociation.com (`frontend/public/authbolt.png`, `p2p/web/icons/authbolt.png`).
+
 ## Where things are
 
 - `docs/hodos-spv.md`: how to run Hodos in spv mode, push, zero-conf, known gaps.

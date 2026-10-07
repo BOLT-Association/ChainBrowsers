@@ -129,6 +129,14 @@ export function sqlStore (db, { now = () => Date.now() } = {}) {
     async delete (id) {
       db.run('DELETE FROM tokens WHERE outpoint = ?', [id])
     },
+    /** The wallet's own notes on a token (attributes.wallet: identity keys, app links); the token
+     *  data is left as stored. */
+    async annotate (id, wallet) {
+      const row = db.get('SELECT attributes FROM tokens WHERE outpoint = ?', [id])
+      if (!row) return
+      const attributes = { ...JSON.parse(row.attributes || '{}'), wallet }
+      db.run('UPDATE tokens SET attributes = ?, updated_at = ? WHERE outpoint = ?', [JSON.stringify(attributes), now(), id])
+    },
     /** Keep the row but mark it spent (history), instead of deleting it. */
     async markSpent (id) {
       db.run('UPDATE tokens SET status = \'spent\', updated_at = ? WHERE outpoint = ?', [now(), id])

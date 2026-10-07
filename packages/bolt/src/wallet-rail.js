@@ -44,6 +44,10 @@ export function walletStore (call) {
     },
     async delete (id) {
       await tokens({ op: 'spend', outpoint: id })
+    },
+    /** The wallet's own notes on a token (attributes.wallet). Hodos takes this only from its own UI. */
+    async annotate (id, wallet) {
+      await tokens({ op: 'annotate', outpoint: id, wallet })
     }
   }
 }
