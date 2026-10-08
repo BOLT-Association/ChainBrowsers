@@ -8,7 +8,8 @@
 //
 // The wallet presents an identity only with AUTH DATA that names the app asking (66 bytes):
 //   [tag 1][app public key 33][challenge hash 32]
-// tag 0x01 register, 0x02 sign in, 0x03 keep a session alive. The app's server makes the data from
+// tag 0x01 register, 0x02 sign in, 0x03 keep a session alive, 0x04 a write (one change a person makes in the
+// app, signed: the hash is the write's own). The app's server makes the data from
 // its own challenge; the wallet reads the tag and the app key to word its prompt, and refuses data
 // that names another app. A presentation is a self-transfer: the settle pays the holder's own key,
 // and the app key is bound by the auth data the commit carries and the settle covers. So it is no use
@@ -29,7 +30,9 @@ import { signWith, sizeOf } from './signer.js'
  *  wallet can refuse it to sites and keep identity signing to its own prompt. */
 export const IDENTITY_PROTOCOL = [2, 'authbolt identity']
 export const AUTH_DATA_BYTES = 66
-const PURPOSES = { register: 1, signin: 2, refresh: 3 }
+const PURPOSES = { register: 1, signin: 2, refresh: 3, write: 4 }
+/** The purposes a wallet presents without asking, under the person's keep-signed-in grant. */
+const SILENT = ['refresh', 'write']
 const PURPOSE_OF = Object.fromEntries(Object.entries(PURPOSES).map(([k, v]) => [v, k]))
 
 const hex = (bytes) => Utils.toHex(bytes)
@@ -48,7 +51,7 @@ function checkAppKey (appPubKey) {
 /** Auth data for a presentation (hex). */
 export function encodeAuthData ({ purpose, appPubKey, challengeHash }) {
   const tag = PURPOSES[purpose]
-  if (!tag) throw new Error(`unknown purpose ${purpose}: register, signin or refresh`)
+  if (!tag) throw new Error(`unknown purpose ${purpose}: register, signin, refresh or write`)
   if (!isHex(challengeHash, 64)) throw new Error('the challenge hash must be 32 bytes (hex)')
   return (tag.toString(16).padStart(2, '0') + checkAppKey(appPubKey) + challengeHash).toLowerCase()
 }
@@ -119,6 +122,7 @@ export class IdentityWallet {
   async present ({ id, domain, appPubKey, data, keepSignedIn }) {
     const app = checkAppKey(appPubKey)
     const decoded = decodeAuthData(data)
+    if (decoded.purpose === 'write') throw new Error('a write is only ever signed silently, under the keep-signed-in grant')
     if (decoded.appPubKey !== app) throw new Error('the auth data names another app than the one asking')
     if (typeof domain !== 'string' || !domain) throw new Error('a presentation needs the site it is for')
     const record = await this.#record(id)
@@ -128,13 +132,13 @@ export class IdentityWallet {
   }
 
   /**
-   * A keep-alive presentation without asking: only keep-alive data, only to an app on a site the user
+   * A presentation without asking: only keep-alive or write data, only to an app on a site the user
    * chose to stay signed in to. Anything else throws NEEDS_PROMPT (or a plain error for wrong data).
    */
   async refresh ({ domain, appPubKey, data }) {
     const app = checkAppKey(appPubKey)
     const decoded = decodeAuthData(data)
-    if (decoded.purpose !== 'refresh') throw new Error('only keep-alive data can be presented without asking')
+    if (!SILENT.includes(decoded.purpose)) throw new Error('only keep-alive or write data can be presented without asking')
     if (decoded.appPubKey !== app) throw new Error('the auth data names another app than the one asking')
     const linked = (await this.forApp({ domain, appPubKey: app }))
       .find((t) => t.apps.some((a) => a.domain === domain && a.appPubKey === app && a.keepSignedIn))

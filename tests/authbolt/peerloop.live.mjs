@@ -15,6 +15,8 @@
 //      the person creates it; the server verifies the presentation and (an admin's name) approves;
 //   3. signing in again after signing out: the prompt offers the identity linked to this site;
 //   4. the keep-alive: a refresh presentation with no prompt shown, accepted by the server;
+//   4b. a signed write: a message sent from the composer is signed silently by the wallet (no prompt),
+//      stored only once the sidecar verified it, and its proof names the same identity;
 //   5. refusals: a made-up presentation, and a presentation answering another challenge.
 //
 // Before running: the stack up (spv-testnet/stack), Hodos started with
@@ -171,6 +173,28 @@ assert.equal(refreshed.body.identity, me.identity)
 assert.doesNotMatch(await promptText().catch(() => ''), /Sign in on app\.lab/, 'no prompt was shown for the keep-alive')
 step('keep-alive: a silent presentation renewed the session (the person chose "keep me signed in"), no prompt shown')
 
+// ---- 4b. a signed write: the app's own composer, the wallet's silent signature, the sidecar's check ----
+const text = `signed hello ${RUN}`
+await inPage(`
+  document.querySelector('#channel-list [data-channel="1"]').click()
+  await new Promise((r) => setTimeout(r, 300))
+  document.getElementById('channel-input').value = ${JSON.stringify(text)}
+  document.getElementById('channel-form').requestSubmit()
+  return true`)
+const sent = await until('the message to be signed and stored', async () => {
+  const page = await inPage('return (await fetch("/api/channels/1/messages?limit=20")).json()')
+  return page.messages?.find((m) => m.text === text && m.signed)
+})
+const proof = await inPage(`return (await fetch('/api/messages/${sent.id}/proof')).json()`)
+const signedWrite = JSON.parse(proof.write)
+assert.equal(proof.issuer, me.identity, 'the write is signed by the account\'s own identity')
+assert.equal(signedWrite.kind, 'message.post')
+assert.equal(signedWrite.body.text, text)
+assert.equal(signedWrite.target, 'POST /api/channels/1/messages')
+assert.doesNotMatch(await promptText().catch(() => ''), /Sign in on app\.lab/, 'no prompt was shown for the write')
+await capture(isPage, join(OUT, '4b-signed-message.png')).catch(() => {})
+step(`a message from the composer was signed silently, verified by the sidecar and stored with its proof (issuer ${proof.issuer.slice(0, 12)}…)`)
+
 // ---- 3. sign out, sign in again: the linked identity is offered -------------------------------------
 await inPage('await fetch("/api/auth/logout", { method: "POST" }); location.reload(); return true').catch(() => {})
 await until('the homepage after signing out', async () => (await screen()) === 'welcome')
@@ -193,6 +217,6 @@ assert.equal(refusals.forged.status, 401, JSON.stringify(refusals.forged))
 assert.equal(refusals.forged.body.error, 'not_verified')
 step(`a made-up presentation is refused: ${refusals.forged.body.message.slice(0, 90)}`)
 
-console.log(`\nPASS AuthBOLT registration, sign-in and keep-alive on PeerLoop in Hodos (screenshots and logs in ${OUT})`)
+console.log(`\nPASS AuthBOLT registration, sign-in, keep-alive and a signed write on PeerLoop in Hodos (screenshots and logs in ${OUT})`)
 stopAll()
 process.exit(0)
