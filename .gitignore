@@ -10,3 +10,5 @@ browsers/*/
 tests/cross-wallet/out/
 /b017/
 /p2p/
+/b017-native/
+.claude/*.local.md
