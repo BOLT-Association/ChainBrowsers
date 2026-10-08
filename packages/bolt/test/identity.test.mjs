@@ -32,7 +32,7 @@ test('auth data: tag, app key and challenge hash, 66 bytes, and nothing else rea
   const data = encodeAuthData({ purpose: 'signin', appPubKey: app, challengeHash: challenge() })
   assert.equal(data.length, AUTH_DATA_BYTES * 2)
   assert.deepEqual(decodeAuthData(data), { purpose: 'signin', appPubKey: app, challengeHash: challenge() })
-  for (const purpose of ['register', 'signin', 'refresh']) {
+  for (const purpose of ['register', 'signin', 'refresh', 'write']) {
     assert.equal(decodeAuthData(encodeAuthData({ purpose, appPubKey: app, challengeHash: challenge() })).purpose, purpose)
   }
   assert.throws(() => decodeAuthData(data.slice(2)), /66 bytes/)
@@ -144,6 +144,30 @@ test('refresh: silent only for an app the user chose to stay signed in to, and o
 
   await ids.setKeepSignedIn({ id: id.id, domain: SITE, appPubKey: app, keep: false })
   await assert.rejects(ids.refresh({ domain: SITE, appPubKey: app, data: refresh }), (e) => e.code === 'NEEDS_PROMPT')
+})
+
+test('write: a signed change (tag 04) is presented silently under the same keep-signed-in grant, never otherwise', async () => {
+  const chain = pretendChain()
+  const { ids } = identityOn(chain)
+  const site = verifierOn(chain)
+  const app = appKey()
+  const id = await ids.create()
+  const signin = encodeAuthData({ purpose: 'signin', appPubKey: app, challengeHash: challenge() })
+  const write = encodeAuthData({ purpose: 'write', appPubKey: app, challengeHash: challenge('a message') })
+  assert.equal(write.slice(0, 2), '04')
+
+  await ids.present({ id: id.id, domain: SITE, appPubKey: app, data: signin })
+  await assert.rejects(ids.refresh({ domain: SITE, appPubKey: app, data: write }), (e) => e.code === 'NEEDS_PROMPT', 'no grant: no silent write')
+
+  await ids.present({ id: id.id, domain: SITE, appPubKey: app, data: signin, keepSignedIn: true })
+  const { package: pkg } = await ids.refresh({ domain: SITE, appPubKey: app, data: write })
+  const r = await verifyIdentity({ handler: site, package: pkg, appPubKey: app, data: write })
+  assert.equal(r.ok, true, r.reason)
+  assert.equal(r.purpose, 'write', 'the app server learns it is a write, not a keep-alive')
+  assert.equal(r.issuer, id.issuer)
+
+  // A write is never prompted for: present() refuses it, so a page cannot turn it into a sign-in prompt.
+  await assert.rejects(ids.present({ id: id.id, domain: SITE, appPubKey: app, data: write }), /silently/)
 })
 
 test('rotate: a self-transfer to a new holder key; the issuer, the tags and the app stay', async () => {

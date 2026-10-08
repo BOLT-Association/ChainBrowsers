@@ -95,3 +95,16 @@ test('headersTracker: asks the app server whether a root is in ITS verified chai
   // An app server that cannot be reached is not a yes.
   assert.equal(await isValid('aa'.repeat(32), 7), false)
 })
+
+test('POST /verify: a write (tag 04), signed silently, verifies as a write', async () => {
+  const { ids, server, url, app, id } = await setup()
+  const signin = encodeAuthData({ purpose: 'signin', appPubKey: app, challengeHash: challenge('s') })
+  await ids.present({ id: id.id, domain: 'peerloop.example', appPubKey: app, data: signin, keepSignedIn: true })
+  const data = encodeAuthData({ purpose: 'write', appPubKey: app, challengeHash: challenge('{"kind":"message.post"}') })
+  const { package: pkg } = await ids.refresh({ domain: 'peerloop.example', appPubKey: app, data })
+  const r = await (await post(url, { package: pkg, appPubKey: app, data })).json()
+  assert.equal(r.ok, true, r.reason)
+  assert.equal(r.purpose, 'write')
+  assert.equal(r.issuer, id.issuer)
+  server.close()
+})
