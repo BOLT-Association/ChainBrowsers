@@ -2,6 +2,9 @@
 //
 //   node scripts/record-verify-contract.mjs <out.json>
 //
+// Each case keeps the request it sent (real packages), so a verifier ported to another language
+// (b017-native's Go authbolt, in p2pd) can be run on the same packages and held to the same answers.
+//
 // The real sidecar (createVerifyServer + verifyIdentity) answers real presentations, made by an
 // IdentityWallet on the package's pretend chain (test/harness.mjs): an accepted write, and each way
 // one is refused. p2p holds both its sidecar client and its StubVerifier to these answers, so the
@@ -45,28 +48,31 @@ const signin = encodeAuthData({ purpose: 'signin', appPubKey: app, challengeHash
 await ids.present({ id: id.id, domain: SITE, appPubKey: app, data: signin, keepSignedIn: true })
 const write = encodeAuthData({ purpose: 'write', appPubKey: app, challengeHash: challenge('{"v":1,"kind":"message.post"}') })
 const { package: pkg } = await ids.refresh({ domain: SITE, appPubKey: app, data: write })
+const keepAlive = encodeAuthData({ purpose: 'refresh', appPubKey: app, challengeHash: challenge('keep alive') })
+const { package: kept } = await ids.refresh({ domain: SITE, appPubKey: app, data: keepAlive })
 
 // A presentation that moves the token to another key (a wallet ignoring the rule would build it).
 const raw = new BoltHandler({ core: brc100Core({ wallet, broadcast: chain.broadcast, store, protocolID: IDENTITY_PROTOCOL }), keyId: id.holderKeyId })
-const { package: elsewhere } = await raw.present(id.id, { data: write, to: Hash.hash160(Utils.toArray(otherApp, 'hex')) })
+const { package: elsewhere } = await raw.present(id.id, { data: keepAlive, to: Hash.hash160(Utils.toArray(otherApp, 'hex')) })
 
 // An identity minted on another chain: its anchor was never seen where the sidecar asks.
 const away = identityOn(pretendChain())
 const awayId = await away.ids.create()
 await away.ids.present({ id: awayId.id, domain: SITE, appPubKey: app, data: signin, keepSignedIn: true })
-const { package: unseen } = await away.ids.refresh({ domain: SITE, appPubKey: app, data: write })
+const { package: unseen } = await away.ids.refresh({ domain: SITE, appPubKey: app, data: keepAlive })
 
-const other = encodeAuthData({ purpose: 'write', appPubKey: app, challengeHash: challenge('another write') })
+const other = encodeAuthData({ purpose: 'refresh', appPubKey: app, challengeHash: challenge('another keep-alive') })
 const cases = [
   ['accepted', { package: pkg, appPubKey: app, data: write }],
-  ['other_data', { package: pkg, appPubKey: app, data: other }],
-  ['other_app', { package: pkg, appPubKey: otherApp, data: write }],
-  ['bad_data', { package: pkg, appPubKey: app, data: 'abcd' }],
-  ['invalid_package', { package: ['00', '00'], appPubKey: app, data: write }],
-  ['not_self_transfer', { package: elsewhere, appPubKey: app, data: write }],
-  ['anchor_unseen', { package: unseen, appPubKey: app, data: write }],
-  ['bad_request', { package: 'not a list', appPubKey: app, data: write }],
-  ['unauthorized', { package: pkg, appPubKey: app, data: write }, 'wrong-secret-0000000'],
+  ['accepted_refresh', { package: kept, appPubKey: app, data: keepAlive }],
+  ['other_data', { package: kept, appPubKey: app, data: other }],
+  ['other_app', { package: kept, appPubKey: otherApp, data: keepAlive }],
+  ['bad_data', { package: kept, appPubKey: app, data: 'abcd' }],
+  ['invalid_package', { package: ['00', '00'], appPubKey: app, data: keepAlive }],
+  ['not_self_transfer', { package: elsewhere, appPubKey: app, data: keepAlive }],
+  ['anchor_unseen', { package: unseen, appPubKey: app, data: keepAlive }],
+  ['bad_request', { package: 'not a list', appPubKey: app, data: keepAlive }],
+  ['unauthorized', { package: kept, appPubKey: app, data: keepAlive }, 'wrong-secret-0000000'],
 ]
 
 const recorded = []
@@ -74,7 +80,7 @@ for (const [name, body, secret = SECRET] of cases) {
   const res = await fetch(`${url}/verify`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${secret}` }, body: JSON.stringify(body) })
   const response = await res.json()
   delete response.anchors // which txids anchored it: different every run, and p2p reads none
-  recorded.push({ name, status: res.status, response })
+  recorded.push({ name, request: body, ...(secret !== SECRET ? { secret } : {}), status: res.status, response })
   console.log(`${name}: ${res.status} ${JSON.stringify(response)}`)
 }
 server.close()

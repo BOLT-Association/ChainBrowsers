@@ -156,9 +156,8 @@ the app key to word its prompt and refuses data whose app key is not the one ask
 PeerLoop page ──/bolt/request──> Hodos C++ ──overlay──> trusted prompt (React + packages/bolt)
      ▲                              │                     │ wallet calls as Hodos itself
      └──────── package ─────────────┘ <── bolt_result ────┘
-PeerLoop page ──package──> p2pd ──/verify──> bolt-verify sidecar (b017) ──> Arcade (anchor seen?)
-                             ▲                        │
-                             └── is this merkle root in your verified chain? ──┘
+PeerLoop page ──package──> p2pd (b017-native, in process) ──> Arcade (anchor seen?)
+                               │ roots judged by its own verified chain
 p2pd header chain <── candidate headers ── Arcade chaintracks (+ tip stream)
 ```
 
@@ -166,8 +165,16 @@ p2pd header chain <── candidate headers ── Arcade chaintracks (+ tip str
 takes headers from Arcade's chaintracks and keeps only what passes its own checks. PeerLoop does the
 same in p2pd (plan item t38): a verified header chain with the Hodos rules (layout, proof of work,
 regtest's fixed difficulty, pinned genesis, linkage, 2 h future limit, most work wins, reorgs),
-synced from chaintracks and woken by its tip stream. The sidecar asks p2pd whether a merkle root is
-in that chain; it never asks Arcade.
+synced from chaintracks and woken by its tip stream. p2pd judges merkle roots against that chain;
+it never asks Arcade about them.
+
+**The verifier (2026-10-09).** p2pd checks presentations in process on the Go port of b017
+(`BOLT-Association/b017-native`, `go/authbolt`), which replaced the bolt-verify sidecar as the
+default. The sidecar stays available with `-bolt-verify-url` (it then asks p2pd about roots on a
+loopback port). Real presentations and the sidecar's answers to them are recorded into
+`p2p/testdata/contract/verify/recorded.json` by `packages/bolt/scripts/record-verify-contract.mjs`,
+and p2p's tests hold the Go verifier to every recorded verdict and reason. The Go verifier does not
+know auth-data tag 04 (a write) yet.
 
 - **packages/bolt:** an identity module: the data format; a key per AuthBOLT (its own BRC-43
   protocol, keyID kept with the token); app tags and keep-signed-in grants in the token's

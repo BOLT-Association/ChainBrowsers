@@ -2,11 +2,12 @@
 //
 // Everything is real except the names: Hodos in spv mode on the regtest stack (its own verified
 // header chain, Arcade only), p2pd with its own verified header chain synced from Arcade's
-// chaintracks, the bolt-verify sidecar asking p2pd about roots and Arcade about anchors, and the
+// chaintracks checking presentations itself (the Go port of b017: roots judged by its own chain,
+// Arcade asked only whether an anchor was seen; VERIFIER=sidecar uses the bolt-verify sidecar), and the
 // person's clicks in Hodos's own identity prompt. PeerLoop is served over https as app.lab, a made-up
 // name the browser maps to this machine (so window.BOLT is injected and no real site is involved).
 //
-// Negative control: NC_NO_VERIFIER=1 must make it fail (see VERIFY_URL).
+// Negative control: NC_NO_VERIFIER=1 must make it fail (see NC).
 //
 // What it shows, in order:
 //   1. the page has window.BOLT with requestPresentation and no present; an AuthBOLT cannot be
@@ -16,7 +17,7 @@
 //   3. signing in again after signing out: the prompt offers the identity linked to this site;
 //   4. the keep-alive: a refresh presentation with no prompt shown, accepted by the server;
 //   4b. a signed write: a message sent from the composer is signed silently by the wallet (no prompt),
-//      stored only once the sidecar verified it, and its proof names the same identity;
+//      stored only once the server verified it, and its proof names the same identity;
 //   5. refusals: a made-up presentation, and a presentation answering another challenge.
 //
 // Before running: the stack up (spv-testnet/stack), Hodos started with
@@ -26,7 +27,7 @@
 //   node tests/authbolt/peerloop.live.mjs
 import assert from 'node:assert/strict'
 import { execFileSync, spawn } from 'node:child_process'
-import { existsSync, mkdirSync, writeFileSync, createWriteStream } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync, createWriteStream } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { randomBytes } from 'node:crypto'
@@ -44,10 +45,15 @@ const RQLITE_PORT = 14023
 const CHAINTRACKS = 'http://127.0.0.1:8083/chaintracks/v2'
 const SECRET = randomBytes(24).toString('hex')
 const APP_KEY = PrivateKey.fromRandom().toPublicKey().toString()
-// Negative control (NC_NO_VERIFIER=1): p2pd asks a verifier that is not there, so nothing it is shown
-// can be checked and the run must FAIL at registration. A pass with this set would mean the test does
-// not depend on the presentations being verified.
-const VERIFY_URL = process.env.NC_NO_VERIFIER ? 'http://127.0.0.1:1' : 'http://127.0.0.1:8097'
+// Who checks presentations: p2pd itself (default) or the bolt-verify sidecar (VERIFIER=sidecar).
+const SIDECAR = process.env.VERIFIER === 'sidecar'
+// Negative control (NC_NO_VERIFIER=1): nothing p2pd is shown can be checked, so the run must FAIL at
+// registration. In process, p2pd can reach neither Arcade (is the anchor seen?) nor chaintracks (its
+// header chain stays at genesis, so no merkle path proves anything); with the sidecar, p2pd asks a
+// sidecar that is not there. A pass with this set would mean the test does not depend on the
+// presentations being verified.
+const NC = !!process.env.NC_NO_VERIFIER
+const NOWHERE = 'http://127.0.0.1:1'
 
 const step = (m) => console.log('ok  ', m)
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -77,7 +83,7 @@ function stopAll () {
 }
 process.on('exit', stopAll)
 
-// ---- the pieces: rqlite (throwaway), the sidecar, p2pd over https ----------------------------------
+// ---- the pieces: rqlite (throwaway), p2pd over https (and the sidecar with VERIFIER=sidecar) --------
 const cert = join(OUT, 'app.pem')
 const key = join(OUT, 'app-key.pem')
 if (!existsSync(cert)) {
@@ -91,24 +97,47 @@ try { execFileSync('docker', ['rm', '-f', 'cb-authbolt-rqlite'], { stdio: 'ignor
 execFileSync('docker', ['run', '-d', '--rm', '--name', 'cb-authbolt-rqlite', '-p', `127.0.0.1:${RQLITE_PORT}:4001`, 'rqlite/rqlite:10.3.7'], { stdio: 'ignore' })
 await until('rqlite', async () => (await fetch(`http://127.0.0.1:${RQLITE_PORT}/readyz`)).ok)
 
-start('bolt-verify', 'node', ['packages/bolt/bin/bolt-verify.mjs'], {
-  BOLT_VERIFY_SECRET: SECRET, ARCADE_URL: 'http://localhost:8080', HEADERS_URL: 'http://127.0.0.1:8099', BOLT_VERIFY_PORT: '8097'
-})
-start('p2pd', join(ROOT, 'p2p/results/p2pd.exe'), [
+const headersFile = join(OUT, 'headers.txt')
+const common = [
   '-addr', `127.0.0.1:${PORT}`, '-cert', cert, '-key', key, '-web', join(ROOT, 'p2p/web'), '-results', '',
-  '-rqlite-url', `http://127.0.0.1:${RQLITE_PORT}`, '-admins', ADMIN,
-  '-app-key', APP_KEY, '-bolt-verify-url', VERIFY_URL, '-bolt-secret-file', secretFile,
-  '-chaintracks-url', CHAINTRACKS, '-internal-addr', '127.0.0.1:8099', '-headers-file', join(OUT, 'headers.txt')
-])
+  '-rqlite-url', `http://127.0.0.1:${RQLITE_PORT}`, '-admins', ADMIN, '-app-key', APP_KEY
+]
+if (SIDECAR) {
+  start('bolt-verify', 'node', ['packages/bolt/bin/bolt-verify.mjs'], {
+    BOLT_VERIFY_SECRET: SECRET, ARCADE_URL: 'http://localhost:8080', HEADERS_URL: 'http://127.0.0.1:8099', BOLT_VERIFY_PORT: '8097'
+  })
+  start('p2pd', join(ROOT, 'p2p/results/p2pd.exe'), [...common,
+    '-bolt-verify-url', NC ? NOWHERE : 'http://127.0.0.1:8097', '-bolt-secret-file', secretFile,
+    '-chaintracks-url', CHAINTRACKS, '-internal-addr', '127.0.0.1:8099', '-headers-file', headersFile
+  ])
+} else {
+  // A fresh header cache, so p2pd logs its chain's tip as it syncs (what the wait below reads).
+  rmSync(headersFile, { force: true })
+  start('p2pd', join(ROOT, 'p2p/results/p2pd.exe'), [...common,
+    '-arcade-url', NC ? NOWHERE : 'http://localhost:8080',
+    '-chaintracks-url', NC ? `${NOWHERE}/chaintracks/v2` : CHAINTRACKS, '-headers-file', headersFile
+  ])
+}
 
 // p2pd's own header chain must reach the tip before a presentation's anchor can be judged.
 const tip = (await (await fetch(`${CHAINTRACKS}/height`)).json()).height
-const ownTip = await until(`p2pd's header chain to reach ${tip}`, async () => {
-  const r = await fetch(`http://127.0.0.1:8099/headers/root?height=0&root=${'00'.repeat(32)}`, { headers: { authorization: `Bearer ${SECRET}` } })
-  const j = await r.json()
-  return j.tip >= tip ? j.tip : null
-}, 180000, 1000)
-step(`p2pd synced its own verified header chain to ${ownTip} (chaintracks said ${tip}); bolt-verify asks it, not Arcade`)
+if (SIDECAR) {
+  const ownTip = await until(`p2pd's header chain to reach ${tip}`, async () => {
+    const r = await fetch(`http://127.0.0.1:8099/headers/root?height=0&root=${'00'.repeat(32)}`, { headers: { authorization: `Bearer ${SECRET}` } })
+    const j = await r.json()
+    return j.tip >= tip ? j.tip : null
+  }, 180000, 1000)
+  step(`p2pd synced its own verified header chain to ${ownTip} (chaintracks said ${tip}); bolt-verify asks it, not Arcade`)
+} else if (NC) {
+  step('NC: p2pd reaches neither Arcade nor chaintracks; registration must fail')
+} else {
+  const ownTip = await until(`p2pd's header chain to reach ${tip}`, () => {
+    const tips = [...readFileSync(join(OUT, 'p2pd.log'), 'utf8').matchAll(/headers: \+\d+, tip (\d+)/g)].map((m) => Number(m[1]))
+    const top = Math.max(-1, ...tips)
+    return top >= tip ? top : null
+  }, 180000, 1000)
+  step(`p2pd synced its own verified header chain to ${ownTip} (chaintracks said ${tip}) and checks presentations itself`)
+}
 
 // ---- the page ----------------------------------------------------------------------------------------
 const isPage = (u) => u.startsWith(PAGE) && !u.endsWith('/sw.js') // not the page's service worker
@@ -173,7 +202,7 @@ assert.equal(refreshed.body.identity, me.identity)
 assert.doesNotMatch(await promptText().catch(() => ''), /Sign in on app\.lab/, 'no prompt was shown for the keep-alive')
 step('keep-alive: a silent presentation renewed the session (the person chose "keep me signed in"), no prompt shown')
 
-// ---- 4b. a signed write: the app's own composer, the wallet's silent signature, the sidecar's check ----
+// ---- 4b. a signed write: the app's own composer, the wallet's silent signature, the server's check ----
 const text = `signed hello ${RUN}`
 await inPage(`
   document.querySelector('#channel-list [data-channel="1"]').click()
@@ -193,7 +222,7 @@ assert.equal(signedWrite.body.text, text)
 assert.equal(signedWrite.target, 'POST /api/channels/1/messages')
 assert.doesNotMatch(await promptText().catch(() => ''), /Sign in on app\.lab/, 'no prompt was shown for the write')
 await capture(isPage, join(OUT, '4b-signed-message.png')).catch(() => {})
-step(`a message from the composer was signed silently, verified by the sidecar and stored with its proof (issuer ${proof.issuer.slice(0, 12)}…)`)
+step(`a message from the composer was signed silently, verified by ${SIDECAR ? 'the sidecar' : 'p2pd'} and stored with its proof (issuer ${proof.issuer.slice(0, 12)}…)`)
 
 // ---- 3. sign out, sign in again: the linked identity is offered -------------------------------------
 await inPage('await fetch("/api/auth/logout", { method: "POST" }); location.reload(); return true').catch(() => {})
