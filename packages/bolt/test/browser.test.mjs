@@ -142,6 +142,15 @@ test('requestPresentation rides the bridge to the own prompt of the wallet (/bol
   await assert.rejects(page(declining).requestPresentation(req), /declined/)
 })
 
+test('sign rides the bridge to the wallet (/bolt/sign), which signs with the holder key or asks', { skip }, async () => {
+  const asked = []
+  const wallet = { walletCall: async (method, endpoint, args) => { asked.push([method, endpoint, args]); return { identity: '03aa', holder: '03aa', signature: '3006' } } }
+  const req = { kind: 'signin', appPubKey: '02' + 'ab'.repeat(32), payload: '02' + 'cd'.repeat(65), silent: true }
+  assert.deepEqual(await page(wallet).sign(req), { identity: '03aa', holder: '03aa', signature: '3006' })
+  assert.deepEqual(asked, [['bolt/sign', '/bolt/sign', req]])
+  await assert.rejects(page({ walletCall: async () => ({ error: 'BOLT: NEEDS_PROMPT' }) }).sign(req), /NEEDS_PROMPT/)
+})
+
 test('getKey() rides the bridge to the BRC-100 endpoint; a wallet error is thrown', { skip }, async () => {
   const wallet = fakeWallet(pretendChain())
   const key = await page(wallet).getKey()

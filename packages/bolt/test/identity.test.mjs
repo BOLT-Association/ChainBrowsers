@@ -2,12 +2,14 @@
 // presented only with data that names the app asking. Runs on the pretend chain (harness.mjs).
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { Hash, PrivateKey, Utils } from '@bsv/sdk'
+import { BigNumber, ECDSA, Hash, PrivateKey, PublicKey, Signature, Utils } from '@bsv/sdk'
+import { existsSync, readFileSync } from 'node:fs'
 import { fromBeef } from 'b017'
 import { BoltHandler, brc100Core, memoryStore } from '../src/index.js'
 import {
-  AUTH_DATA_BYTES, IDENTITY_PROTOCOL, IdentityWallet, decodeAuthData, encodeAuthData, verifyIdentity
+  AUTH_DATA_BYTES, IDENTITY_PROTOCOL, IdentityWallet, decodeAuthData, encodeAuthData, signDigest, verifyIdentity
 } from '../src/identity.js'
+import { WRITE_TIERS } from '../src/write-tiers.js'
 import { pretendChain, protoWalletOn } from './harness.mjs'
 
 const hex = Utils.toHex
@@ -184,9 +186,126 @@ test('rotate: a self-transfer to a new holder key; the issuer, the tags and the 
   assert.notEqual(moved.holderKeyId, id.keyId, 'a new holder key')
   assert.deepEqual((await ids.forApp({ domain: SITE, appPubKey: app })).map((t) => t.id), [moved.id], 'the tag moved with it')
 
+  // A moved token proves no ownership any more (audit V1): a relying party refuses it, and the
+  // wallet will not register it anywhere.
   const data = encodeAuthData({ purpose: 'signin', appPubKey: app, challengeHash: challenge('after') })
   const { package: pkg } = await ids.present({ id: moved.id, domain: SITE, appPubKey: app, data })
   const r = await verifyIdentity({ handler: site, package: pkg, appPubKey: app, data })
+  assert.equal(r.ok, false)
+  assert.match(r.reason, /mint/)
+  const app2 = appKey()
+  await assert.rejects(ids.present({ id: moved.id, domain: SITE, appPubKey: app2, data: encodeAuthData({ purpose: 'register', appPubKey: app2, challengeHash: challenge() }) }), /mint/)
+})
+
+// ---- holder-key signatures (PeerLoop's V1 plan): after registering, an app knows the identity's
+// holder key, and sign-in, keep-alives and writes are that key's signatures over a digest the
+// wallet builds itself. ----
+
+const digestVectors = JSON.parse(readFileSync(new URL('./fixtures/sign-digests.json', import.meta.url), 'utf8'))
+
+/** Does `signature` (DER hex) by `pubKey` (hex) cover `digest` (bytes)? */
+const verifies = (pubKey, digest, signature) =>
+  ECDSA.verify(new BigNumber(digest), Signature.fromDER(Utils.toArray(signature, 'hex')), PublicKey.fromString(pubKey))
+
+/** An identity registered with an app, the person having chosen to stay signed in or not. */
+async function registered (chain, { keep = true } = {}) {
+  const w = identityOn(chain)
+  const app = appKey()
+  const id = await w.ids.create()
+  await w.ids.present({ id: id.id, domain: SITE, appPubKey: app, data: encodeAuthData({ purpose: 'register', appPubKey: app, challengeHash: challenge() }), keepSignedIn: keep })
+  return { ...w, app, id }
+}
+
+const writeOf = (kind) => JSON.stringify({ v: 1, kind, target: 'POST /x', body: {}, at: 1, seq: 1, sid: 's' })
+
+test('signDigest: the digest is the contract\'s for every kind (computed independently, sign-digests.json)', () => {
+  for (const c of digestVectors.cases) {
+    assert.equal(hex(signDigest({ kind: c.kind, appPubKey: digestVectors.appPubKey, payload: c.payload })), c.digest, c.kind)
+  }
+  assert.throws(() => signDigest({ kind: 'pay', appPubKey: digestVectors.appPubKey, payload: 'x' }), /kind/)
+  assert.throws(() => signDigest({ kind: 'signin', appPubKey: 'ab', payload: 'x' }), /app key/)
+})
+
+test('sign: under the keep-signed-in grant, sign-in, keep-alive and silent-tier writes are signed by the holder key, without asking', async () => {
+  const chain = pretendChain()
+  const { ids, app, id } = await registered(chain)
+  for (const [kind, payload] of [['signin', '02aa'], ['refresh', '03bb'], ['write', writeOf('message.post')]]) {
+    const s = await ids.sign({ domain: SITE, appPubKey: app, kind, payload, silent: true })
+    assert.equal(s.identity, id.issuer, 'it names the identity (its issuer key)')
+    assert.equal(s.holder, id.issuer, 'the holder key is the issuer key until the wallet rotates it')
+    assert.ok(verifies(s.holder, signDigest({ kind, appPubKey: app, payload }), s.signature), kind)
+  }
+})
+
+test('sign: never silently without the grant, for a prompted-tier or unknown write, for another site, or for rotate/recover', async () => {
+  const chain = pretendChain()
+  const { ids, app, id } = await registered(chain, { keep: false })
+  const silent = (kind, payload, domain = SITE) => ids.sign({ domain, appPubKey: app, kind, payload, silent: true })
+  await assert.rejects(silent('signin', '02aa'), (e) => e.code === 'NEEDS_PROMPT', 'no grant')
+  await ids.setKeepSignedIn({ id: id.id, domain: SITE, appPubKey: app, keep: true })
+  await assert.rejects(silent('write', writeOf('member.role')), (e) => e.code === 'NEEDS_PROMPT', 'a prompted-tier write')
+  await assert.rejects(silent('write', writeOf('no.such.kind')), (e) => e.code === 'NEEDS_PROMPT', 'an unknown kind')
+  await assert.rejects(silent('write', 'not json'), /write/)
+  await assert.rejects(silent('signin', '02aa', 'evil.example'), (e) => e.code === 'NEEDS_PROMPT', 'another site')
+  await assert.rejects(silent('rotate', '{}'), /rotate|recover|kind/)
+  await assert.rejects(silent('signin', 'x'.repeat(65 * 1024)), /64 KiB/)
+  // Behind the wallet's prompt (silent false, the person chose the identity), a prompted write is signed.
+  const s = await ids.sign({ id: id.id, domain: SITE, appPubKey: app, kind: 'write', payload: writeOf('member.role'), silent: false })
+  assert.ok(verifies(s.holder, signDigest({ kind: 'write', appPubKey: app, payload: writeOf('member.role') }), s.signature))
+  await assert.rejects(ids.sign({ domain: SITE, appPubKey: app, kind: 'write', payload: writeOf('member.role'), silent: false }), /identity/, 'a prompted signature names its identity')
+})
+
+test('the write tiers are PeerLoop\'s published actions', { skip: !existsSync(new URL('../../../p2p/testdata/contract/api/actions.json', import.meta.url)) && 'no p2p clone here' }, () => {
+  const { actions } = JSON.parse(readFileSync(new URL('../../../p2p/testdata/contract/api/actions.json', import.meta.url), 'utf8'))
+  assert.deepEqual(WRITE_TIERS, Object.fromEntries(actions.map((a) => [a.kind, a.tier])))
+})
+
+test('rotateHolder: the current holder signs the move to a new key; it takes effect when the app has accepted it', async () => {
+  const chain = pretendChain()
+  const { ids, app, id } = await registered(chain)
+  const r = await ids.rotateHolder({ id: id.id, domain: SITE, appPubKey: app })
+  assert.equal(r.seq, 1)
+  assert.notEqual(r.newHolder, id.issuer)
+  const payload = `{"issuer":"${id.issuer}","newHolder":"${r.newHolder}","seq":1}`
+  assert.ok(verifies(id.issuer, signDigest({ kind: 'rotate', appPubKey: app, payload }), r.signature), 'signed by the old holder, over the contract\'s JSON')
+  let s = await ids.sign({ domain: SITE, appPubKey: app, kind: 'refresh', payload: '03', silent: true })
+  assert.equal(s.holder, id.issuer, 'not yet: the app has not accepted it')
+  await ids.confirmHolder({ id: id.id, domain: SITE, appPubKey: app })
+  s = await ids.sign({ domain: SITE, appPubKey: app, kind: 'refresh', payload: '03', silent: true })
+  assert.equal(s.holder, r.newHolder)
+  assert.ok(verifies(r.newHolder, signDigest({ kind: 'refresh', appPubKey: app, payload: '03' }), s.signature))
+  const again = await ids.rotateHolder({ id: id.id, domain: SITE, appPubKey: app })
+  assert.equal(again.seq, 2)
+  assert.ok(verifies(r.newHolder, signDigest({ kind: 'rotate', appPubKey: app, payload: `{"issuer":"${id.issuer}","newHolder":"${again.newHolder}","seq":2}` }), again.signature))
+  await assert.rejects(ids.confirmHolder({ id: id.id, domain: 'evil.example', appPubKey: app }), /not linked|no rotation/)
+})
+
+test('recoverHolder: the issuer key signs a rebind over the app\'s challenge, whatever the holder key is', async () => {
+  const chain = pretendChain()
+  const { ids, app, id } = await registered(chain)
+  await ids.rotateHolder({ id: id.id, domain: SITE, appPubKey: app })
+  await ids.confirmHolder({ id: id.id, domain: SITE, appPubKey: app })
+  const data = '02' + app + challenge('recover')
+  const r = await ids.recoverHolder({ id: id.id, domain: SITE, appPubKey: app, challenge: data })
+  assert.equal(r.seq, 2)
+  const payload = `{"issuer":"${id.issuer}","newHolder":"${r.newHolder}","seq":2,"challenge":"${data}"}`
+  assert.ok(verifies(id.issuer, signDigest({ kind: 'recover', appPubKey: app, payload }), r.signature), 'by the issuer key')
+  await ids.confirmHolder({ id: id.id, domain: SITE, appPubKey: app })
+  assert.equal((await ids.sign({ domain: SITE, appPubKey: app, kind: 'signin', payload: '02', silent: true })).holder, r.newHolder)
+  // A recovery after the wallet lost its count: the app's seq can be given.
+  assert.equal((await ids.recoverHolder({ id: id.id, domain: SITE, appPubKey: app, challenge: data, seq: 9 })).seq, 9)
+})
+
+test('verifyIdentity: a presentation must spend the token\'s own mint, carried in the package (audit V1)', async () => {
+  const chain = pretendChain()
+  const { ids } = identityOn(chain)
+  const site = verifierOn(chain)
+  const app = appKey()
+  const id = await ids.create()
+  const data = encodeAuthData({ purpose: 'register', appPubKey: app, challengeHash: challenge() })
+  const { package: pkg } = await ids.present({ id: id.id, domain: SITE, appPubKey: app, data })
+  const r = await verifyIdentity({ handler: site, package: pkg, appPubKey: app, data })
   assert.equal(r.ok, true, r.reason)
-  assert.equal(r.issuer, id.issuer, 'the app recognises the same identity')
+  assert.equal(r.mintTxid, id.id.split('.')[0], 'the verdict names the mint')
+  assert.equal(r.holderPubKey, id.issuer, 'and the key that signed the commit')
 })
