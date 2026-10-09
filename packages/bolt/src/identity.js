@@ -198,19 +198,11 @@ export class IdentityWallet {
     if (!['signin', 'refresh', 'write'].includes(kind)) throw new Error(`a page may ask to sign signin, refresh or write, not ${kind}: rotate and recover are the wallet's own`)
     if (typeof payload !== 'string' || payload.length > MAX_PAYLOAD) throw new Error('the payload must be text of at most 64 KiB')
     const tier = kind === 'write' ? tierOfWrite(payload) : 'silent'
-    let record
-    if (silent) {
-      const linked = (await this.forApp({ domain, appPubKey: app }))
-        .find((t) => t.apps.some((a) => a.domain === domain && a.appPubKey === app && a.keepSignedIn))
-      if (!linked) throw needsPrompt('the user has not chosen to stay signed in to this app')
-      if (tier !== 'silent') throw needsPrompt(`the wallet always asks before signing this change`)
-      record = await this.#record(linked.id)
-    } else {
-      if (typeof id !== 'string' || !id) throw new Error('a prompted signature needs the identity the person chose')
-      if (typeof domain !== 'string' || !domain) throw new Error('a signature needs the site it is for')
-      record = await this.#record(id)
-      await this.#link(record, { domain, appPubKey: app })
+    if (silent && tier !== 'silent') {
+      await this.#chosen({ domain, appPubKey: app, silent }) // no grant reads as no grant first
+      throw needsPrompt('the wallet always asks before signing this change')
     }
+    const record = await this.#chosen({ id, domain, appPubKey: app, silent })
     const entry = this.#app(record, domain, app)
     const keyId = entry.signKeyId ?? record.attributes.wallet.issuerKeyId
     return { identity: record.issuer, ...(await this.#signAs(keyId, { kind, appPubKey: app, payload })) }
@@ -263,6 +255,39 @@ export class IdentityWallet {
     await this.#setApp(record, domain, app, { signKeyId: pending.keyId, signSeq: pending.seq, pending: undefined })
   }
 
+  /**
+   * Answer a page's request (Hodos POST /bolt/sign) by kind: signin, refresh and write are
+   * signatures (sign); rotate prepares a move of the app's signing key and confirm makes it take
+   * effect, silently only under the keep-signed-in grant; recover uses the issuer key and is never
+   * silent. The page learns the signature and public keys, never anything else.
+   */
+  async answer ({ id, domain, appPubKey, kind, payload, silent, seq }) {
+    const app = checkAppKey(appPubKey)
+    switch (kind) {
+      case 'signin': case 'refresh': case 'write':
+        return this.sign({ id, domain, appPubKey: app, kind, payload, silent })
+      case 'rotate': {
+        const record = await this.#chosen({ id, domain, appPubKey: app, silent })
+        const r = await this.rotateHolder({ id: record.id, domain, appPubKey: app })
+        return { identity: r.issuer, newHolder: r.newHolder, seq: r.seq, signature: r.signature }
+      }
+      case 'confirm': {
+        const record = await this.#chosen({ id, domain, appPubKey: app, silent })
+        await this.confirmHolder({ id: record.id, domain, appPubKey: app })
+        const entry = this.#app(await this.#record(record.id), domain, app)
+        return { identity: record.issuer, holder: hex(await this.core.publicKey(entry.signKeyId)), seq: entry.signSeq }
+      }
+      case 'recover': {
+        if (silent) throw needsPrompt('the wallet always asks before a recovery')
+        const record = await this.#chosen({ id, domain, appPubKey: app, silent })
+        const r = await this.recoverHolder({ id: record.id, domain, appPubKey: app, challenge: payload, seq })
+        return { identity: r.issuer, newHolder: r.newHolder, seq: r.seq, signature: r.signature }
+      }
+      default:
+        throw new Error(`unknown kind ${kind}: signin, refresh, write, rotate, confirm or recover`)
+    }
+  }
+
   /** Turn the keep-signed-in grant for one app on or off. */
   async setKeepSignedIn ({ id, domain, appPubKey, keep }) {
     const record = await this.#record(id)
@@ -307,6 +332,22 @@ export class IdentityWallet {
   }
 
   // ---- inside ----------------------------------------------------------------------
+
+  /** The identity a request is for: the one the person chose in the prompt (linked to the app
+   *  here), or, silently, the one linked to the app with the keep-signed-in grant (else NEEDS_PROMPT). */
+  async #chosen ({ id, domain, appPubKey, silent }) {
+    if (typeof domain !== 'string' || !domain) throw new Error('a request needs the site it is for')
+    if (silent) {
+      const linked = (await this.forApp({ domain, appPubKey }))
+        .find((t) => t.apps.some((a) => a.domain === domain && a.appPubKey === appPubKey && a.keepSignedIn))
+      if (!linked) throw needsPrompt('the user has not chosen to stay signed in to this app')
+      return this.#record(linked.id)
+    }
+    if (typeof id !== 'string' || !id) throw new Error('a prompted request needs the identity the person chose')
+    const record = await this.#record(id)
+    await this.#link(record, { domain, appPubKey })
+    return this.#record(id)
+  }
 
   /** The identity's link to an app on a site; throws when there is none. */
   #app (record, domain, appPubKey) {
