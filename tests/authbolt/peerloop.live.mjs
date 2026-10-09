@@ -27,7 +27,7 @@
 //   node tests/authbolt/peerloop.live.mjs
 import assert from 'node:assert/strict'
 import { execFileSync, spawn } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync, createWriteStream } from 'node:fs'
+import { existsSync, mkdirSync, rmSync, writeFileSync, createWriteStream } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { randomBytes } from 'node:crypto'
@@ -98,45 +98,40 @@ execFileSync('docker', ['run', '-d', '--rm', '--name', 'cb-authbolt-rqlite', '-p
 await until('rqlite', async () => (await fetch(`http://127.0.0.1:${RQLITE_PORT}/readyz`)).ok)
 
 const headersFile = join(OUT, 'headers.txt')
-const common = [
+rmSync(headersFile, { force: true })
+// p2pd always asks a verifier service on :8097 and answers its root questions on :8099; it links no
+// token-script code of its own. The default verifier is boltverifyd (p2p, the Go b017 port);
+// VERIFIER=sidecar runs the Node bolt-verify sidecar instead. The negative control cuts the
+// verifier off from Arcade and chaintracks, so no presentation can be confirmed and registration
+// must fail.
+start('p2pd', join(ROOT, 'p2p/results/p2pd.exe'), [
   '-addr', `127.0.0.1:${PORT}`, '-cert', cert, '-key', key, '-web', join(ROOT, 'p2p/web'), '-results', '',
-  '-rqlite-url', `http://127.0.0.1:${RQLITE_PORT}`, '-admins', ADMIN, '-app-key', APP_KEY
-]
+  '-rqlite-url', `http://127.0.0.1:${RQLITE_PORT}`, '-admins', ADMIN, '-app-key', APP_KEY,
+  '-bolt-verify-url', 'http://127.0.0.1:8097', '-bolt-secret-file', secretFile,
+  '-chaintracks-url', CHAINTRACKS, '-internal-addr', '127.0.0.1:8099', '-headers-file', headersFile,
+])
 if (SIDECAR) {
   start('bolt-verify', 'node', ['packages/bolt/bin/bolt-verify.mjs'], {
-    BOLT_VERIFY_SECRET: SECRET, ARCADE_URL: 'http://localhost:8080', HEADERS_URL: 'http://127.0.0.1:8099', BOLT_VERIFY_PORT: '8097'
+    BOLT_VERIFY_SECRET: SECRET, ARCADE_URL: NC ? NOWHERE : 'http://localhost:8080', HEADERS_URL: 'http://127.0.0.1:8099', BOLT_VERIFY_PORT: '8097',
   })
-  start('p2pd', join(ROOT, 'p2p/results/p2pd.exe'), [...common,
-    '-bolt-verify-url', NC ? NOWHERE : 'http://127.0.0.1:8097', '-bolt-secret-file', secretFile,
-    '-chaintracks-url', CHAINTRACKS, '-internal-addr', '127.0.0.1:8099', '-headers-file', headersFile
-  ])
 } else {
-  // A fresh header cache, so p2pd logs its chain's tip as it syncs (what the wait below reads).
-  rmSync(headersFile, { force: true })
-  start('p2pd', join(ROOT, 'p2p/results/p2pd.exe'), [...common,
+  execFileSync('go', ['build', '-o', join(ROOT, 'p2p/boltverifyd/boltverifyd.exe'), './boltverifyd'], { cwd: join(ROOT, 'p2p'), stdio: 'inherit' })
+  start('boltverifyd', join(ROOT, 'p2p/boltverifyd/boltverifyd.exe'), [
+    '-addr', '127.0.0.1:8097', '-secret-file', secretFile,
     '-arcade-url', NC ? NOWHERE : 'http://localhost:8080',
-    '-chaintracks-url', NC ? `${NOWHERE}/chaintracks/v2` : CHAINTRACKS, '-headers-file', headersFile
+    '-headers-url', NC ? NOWHERE : 'http://127.0.0.1:8099',
   ])
 }
 
 // p2pd's own header chain must reach the tip before a presentation's anchor can be judged.
 const tip = (await (await fetch(`${CHAINTRACKS}/height`)).json()).height
-if (SIDECAR) {
+{
   const ownTip = await until(`p2pd's header chain to reach ${tip}`, async () => {
     const r = await fetch(`http://127.0.0.1:8099/headers/root?height=0&root=${'00'.repeat(32)}`, { headers: { authorization: `Bearer ${SECRET}` } })
     const j = await r.json()
     return j.tip >= tip ? j.tip : null
   }, 180000, 1000)
-  step(`p2pd synced its own verified header chain to ${ownTip} (chaintracks said ${tip}); bolt-verify asks it, not Arcade`)
-} else if (NC) {
-  step('NC: p2pd reaches neither Arcade nor chaintracks; registration must fail')
-} else {
-  const ownTip = await until(`p2pd's header chain to reach ${tip}`, () => {
-    const tips = [...readFileSync(join(OUT, 'p2pd.log'), 'utf8').matchAll(/headers: \+\d+, tip (\d+)/g)].map((m) => Number(m[1]))
-    const top = Math.max(-1, ...tips)
-    return top >= tip ? top : null
-  }, 180000, 1000)
-  step(`p2pd synced its own verified header chain to ${ownTip} (chaintracks said ${tip}) and checks presentations itself`)
+  step(`p2pd synced its own verified header chain to ${ownTip} (chaintracks said ${tip}); the verifier asks it, not Arcade`)
 }
 
 // ---- the page ----------------------------------------------------------------------------------------
