@@ -10,6 +10,7 @@
 // error reply. Bundled for the Hodos frontend by scripts/bundle-identity.mjs.
 import { brc100Core } from './core.js'
 import { IDENTITY_PROTOCOL, IdentityWallet, decodeAuthData } from './identity.js'
+import { WRITE_TIERS } from './write-tiers.js'
 import { walletBroadcaster, walletStore } from './wallet-rail.js'
 
 export function identityService (call) {
@@ -20,4 +21,4 @@ export function identityService (call) {
   return new IdentityWallet({ core })
 }
 
-export { decodeAuthData }
+export { WRITE_TIERS, decodeAuthData }

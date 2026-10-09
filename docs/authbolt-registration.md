@@ -14,6 +14,8 @@ AuthBOLT targets BRC-100 identity.
   keys keep tokens on different sites unlinkable unless the user links them, on or off chain.
 - **AuthBOLTs only move to self.** The user can rotate the holder pubKeyHash with a self-transfer;
   the recorded issuerPubKey never changes. That constant key is the account's identity at the app.
+  Since 2026-10-09 a token that has moved proves no ownership and cannot register (see "After
+  registration: holder-key signatures"); rotate the signing key instead.
 - **Sites list; users mint and present.** A site may list only the token(s) tagged for it by its
   appPubKey. It may not mint or present. Both happen in the wallet's own UI, under the user's control.
 
@@ -213,3 +215,31 @@ Screenshots and logs: `tests/cross-wallet/out/authbolt/`.
 Not built yet: an Identities list in the Hodos wallet panel (see, unlink, rotate, revoke
 keep-signed-in), linking identities to each other, mainnet header rules (both chains are regtest
 only), BSV Browser (set aside by the user).
+
+## After registration: holder-key signatures (2026-10-09)
+
+The red-team finding V1 (PeerLoop's `docs/security-audit-2026-10.md`) is verifier policy: a token
+whose lineage never passed through a genuine mint proves no ownership, and the verifiers accepted it.
+The covenant is unchanged. What changed:
+
+- **The mint rule.** A presentation is accepted only when its commit spends the token's own mint,
+  carried in the package (spending a mint needs the issuer key: b017's genesis guard). Checked
+  before any network call by boltverifyd (`p2p/boltverifyd/verify.go`) and by the reference
+  verifier here (`verifyIdentity` in `packages/bolt/src/identity.js`, which now also returns
+  `mintTxid` and `holderPubKey`). The wallet refuses to register a token that has moved. b017-native
+  `authbolt` does not have the rule yet.
+- **The token is used only to register.** The app records issuer → holder key (at first the issuer
+  key). After that, sign-in, keep-alives and writes are that key's DER signatures over
+  `sha256("PeerLoop/1
+" ‖ kind ‖ "
+" ‖ app key (33 bytes) ‖ sha256(payload))`, which the wallet
+  builds itself (`signDigest`). Vectors: `packages/bolt/test/fixtures/sign-digests.json`.
+- **The page asks `window.BOLT.sign({ kind, appPubKey, payload, silent })`** (POST `/bolt/sign` in
+  Hodos) for `signin`, `refresh` or `write`, and gets `{ identity, holder, signature }`. Silent only
+  under the keep-signed-in grant, and for a write only when the app's published tier is `silent`
+  (`src/write-tiers.js`, generated from PeerLoop's `actions.json` by `npm run tiers`); anything else
+  is `NEEDS_PROMPT`, and the wallet's prompt signs for the identity the person chose.
+- **Rotation and recovery are the wallet's own.** `rotateHolder` (signed by the current key,
+  `{"issuer","newHolder","seq"}`) and `recoverHolder` (signed by the issuer key over the app's
+  challenge, `{"issuer","newHolder","seq","challenge"}`) prepare the app's request; `confirmHolder`
+  switches to the new key once the app accepted it. Keys are per app (`signKeyId`, `signSeq`).

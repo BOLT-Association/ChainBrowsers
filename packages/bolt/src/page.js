@@ -16,6 +16,10 @@ export const PAGE_METHODS = {
   // An identity (AuthBOLT) is shown only through the wallet's own prompt, which asks the person and
   // chooses the token; the page gets the presentation and nothing else. A page cannot present.
   requestPresentation: { asks: false },
+  // A holder-key signature for an app the identity is registered with (sign-in, keep-alive, a
+  // write): the wallet signs silently only under the person's keep-signed-in grant and only what
+  // the app's published tiers call silent; otherwise it asks in its own prompt.
+  sign: { asks: false },
   transfer: { asks: true },
   pay: { asks: true },
   melt: { asks: true },

@@ -17,14 +17,24 @@
 // to the app.
 //
 // What the wallet remembers about an identity lives in the token row's attributes, under `wallet`:
-//   { issuerKeyId, holderKeyId, apps: [{ domain, appPubKey, keepSignedIn, linkedAt }] }
+//   { issuerKeyId, holderKeyId, apps: [{ domain, appPubKey, keepSignedIn, linkedAt, signKeyId, signSeq, pending }] }
 // `keepSignedIn` is the user's grant for silent keep-alive presentations to that app on that site.
+//
+// Holder-key signatures (PeerLoop's V1 plan). A presentation proves ownership only when its commit
+// spends the token's own mint, which needs the issuer key (b017's genesis guard), so an app takes a
+// presentation only to register, and records the key the identity signs with afterwards: at first
+// the issuer key, then a per-app signing key (`signKeyId`) the wallet rotates to so the issuer key can
+// stay offline. Sign-in, keep-alives and writes are that key's signatures over
+//   sha256("PeerLoop/1\n" ‖ kind ‖ "\n" ‖ app key (33 bytes) ‖ sha256(payload))
+// which the wallet builds itself (signDigest) and never takes from a page. A rotation is signed by the
+// current signing key, a recovery by the issuer key; `signSeq` counts them, as the app does.
 //
 // Imports nothing from Node, so it bundles for the browser's trusted UI.
 import { Hash, P2PKH, Random, Transaction, Utils } from '@bsv/sdk'
 import { fromBeef, toAtomicBeef } from 'b017'
 import { buildCommit, buildMint, buildSettle, readToken } from './nft.js'
-import { signWith, sizeOf } from './signer.js'
+import { lowSDer, signWith, sizeOf } from './signer.js'
+import { WRITE_TIERS } from './write-tiers.js'
 
 /** The BRC-43 protocol identity keys are derived under: level 2 (per counterparty), its own name, so a
  *  wallet can refuse it to sites and keep identity signing to its own prompt. */
@@ -65,6 +75,32 @@ export function decodeAuthData (data) {
   let appPubKey
   try { appPubKey = checkAppKey(s.slice(2, 68)) } catch { throw new Error('the auth data does not carry a valid app key') }
   return { purpose, appPubKey, challengeHash: s.slice(68) }
+}
+
+const SIGN_PREFIX = 'PeerLoop/1\n'
+/** What a holder (or, for recover, the issuer) key signs after registration. */
+export const SIGN_KINDS = ['signin', 'refresh', 'write', 'rotate', 'recover']
+const MAX_PAYLOAD = 64 * 1024
+
+/** The digest a holder signature covers (32 bytes): the kind and the app key are bound in, and the
+ *  prefix keeps it apart from any transaction sighash (a double SHA-256 of a preimage). */
+export function signDigest ({ kind, appPubKey, payload }) {
+  if (!SIGN_KINDS.includes(kind)) throw new Error(`unknown signed kind ${kind}: ${SIGN_KINDS.join(', ')}`)
+  const app = checkAppKey(appPubKey)
+  if (typeof payload !== 'string') throw new Error('the payload must be text')
+  return Hash.sha256([
+    ...Utils.toArray(SIGN_PREFIX + kind + '\n', 'utf8'),
+    ...Utils.toArray(app, 'hex'),
+    ...Hash.sha256(Utils.toArray(payload, 'utf8'))
+  ])
+}
+
+/** A write's tier: what the app published, and 'prompted' for anything it did not. */
+function tierOfWrite (payload) {
+  let w
+  try { w = JSON.parse(payload) } catch { throw new Error('a write payload must be the write as JSON') }
+  if (typeof w?.kind !== 'string') throw new Error('a write payload must name its kind')
+  return Object.hasOwn(WRITE_TIERS, w.kind) ? WRITE_TIERS[w.kind] : 'prompted'
 }
 
 /** An error the browser answers by showing its prompt instead of presenting silently. */
@@ -126,6 +162,9 @@ export class IdentityWallet {
     if (decoded.appPubKey !== app) throw new Error('the auth data names another app than the one asking')
     if (typeof domain !== 'string' || !domain) throw new Error('a presentation needs the site it is for')
     const record = await this.#record(id)
+    if (decoded.purpose === 'register' && !(await this.#token(record)).isMint) {
+      throw new Error('this identity\'s token has moved since its mint, so it proves no ownership: it cannot register')
+    }
     const pkg = await this.#presentation(record, app, data)
     await this.#link(record, { domain, appPubKey: app, keepSignedIn })
     return { package: pkg, id }
@@ -145,6 +184,83 @@ export class IdentityWallet {
     if (!linked) throw needsPrompt('the user has not chosen to stay signed in to this app')
     const record = await this.#record(linked.id)
     return { package: await this.#presentation(record, app, data), id: linked.id }
+  }
+
+  /**
+   * Sign `payload` as `kind` for an app with the identity's signing key (holder key). Silent (no
+   * prompt shown) only under the keep-signed-in grant for that app on that site, and only for
+   * sign-in, keep-alive and the writes the app's published tiers call silent; anything else throws
+   * NEEDS_PROMPT. Behind the wallet's prompt (`silent` false) the person chose the identity `id`.
+   * @returns `{ identity, holder, signature }`: the issuer key, the signing key and DER hex
+   */
+  async sign ({ id, domain, appPubKey, kind, payload, silent }) {
+    const app = checkAppKey(appPubKey)
+    if (!['signin', 'refresh', 'write'].includes(kind)) throw new Error(`a page may ask to sign signin, refresh or write, not ${kind}: rotate and recover are the wallet's own`)
+    if (typeof payload !== 'string' || payload.length > MAX_PAYLOAD) throw new Error('the payload must be text of at most 64 KiB')
+    const tier = kind === 'write' ? tierOfWrite(payload) : 'silent'
+    let record
+    if (silent) {
+      const linked = (await this.forApp({ domain, appPubKey: app }))
+        .find((t) => t.apps.some((a) => a.domain === domain && a.appPubKey === app && a.keepSignedIn))
+      if (!linked) throw needsPrompt('the user has not chosen to stay signed in to this app')
+      if (tier !== 'silent') throw needsPrompt(`the wallet always asks before signing this change`)
+      record = await this.#record(linked.id)
+    } else {
+      if (typeof id !== 'string' || !id) throw new Error('a prompted signature needs the identity the person chose')
+      if (typeof domain !== 'string' || !domain) throw new Error('a signature needs the site it is for')
+      record = await this.#record(id)
+      await this.#link(record, { domain, appPubKey: app })
+    }
+    const entry = this.#app(record, domain, app)
+    const keyId = entry.signKeyId ?? record.attributes.wallet.issuerKeyId
+    return { identity: record.issuer, ...(await this.#signAs(keyId, { kind, appPubKey: app, payload })) }
+  }
+
+  /**
+   * Move an identity's signing key for one app to a new key: the current signing key signs
+   * `{"issuer","newHolder","seq"}`. The new key is used once the app accepted it (confirmHolder).
+   * @returns `{ issuer, newHolder, seq, signature }` for the app's rotate request
+   */
+  async rotateHolder ({ id, domain, appPubKey }) {
+    const app = checkAppKey(appPubKey)
+    const record = await this.#record(id)
+    const entry = this.#app(record, domain, app)
+    const keyId = this.newKeyId()
+    const newHolder = hex(await this.core.publicKey(keyId))
+    const seq = (entry.signSeq ?? 0) + 1
+    const payload = `{"issuer":"${record.issuer}","newHolder":"${newHolder}","seq":${seq}}`
+    const { signature } = await this.#signAs(entry.signKeyId ?? record.attributes.wallet.issuerKeyId, { kind: 'rotate', appPubKey: app, payload })
+    await this.#setApp(record, domain, app, { pending: { keyId, seq } })
+    return { issuer: record.issuer, newHolder, seq, signature }
+  }
+
+  /**
+   * Rebind an identity for one app to a new signing key with the issuer key, over the app's fresh
+   * challenge: `{"issuer","newHolder","seq","challenge"}`. For a lost signing key; `seq` defaults
+   * to one past the wallet's count. Takes effect with confirmHolder.
+   */
+  async recoverHolder ({ id, domain, appPubKey, challenge, seq }) {
+    const app = checkAppKey(appPubKey)
+    if (typeof challenge !== 'string' || !/^[0-9a-f]{2,264}$/i.test(challenge)) throw new Error('a recovery signs the app\'s challenge (hex)')
+    const record = await this.#record(id)
+    const entry = this.#app(record, domain, app)
+    const keyId = this.newKeyId()
+    const newHolder = hex(await this.core.publicKey(keyId))
+    const n = seq ?? (entry.signSeq ?? 0) + 1
+    if (!Number.isSafeInteger(n) || n < 1) throw new Error('seq counts up from 1')
+    const payload = `{"issuer":"${record.issuer}","newHolder":"${newHolder}","seq":${n},"challenge":"${challenge}"}`
+    const { signature } = await this.#signAs(record.attributes.wallet.issuerKeyId, { kind: 'recover', appPubKey: app, payload })
+    await this.#setApp(record, domain, app, { pending: { keyId, seq: n } })
+    return { issuer: record.issuer, newHolder, seq: n, signature }
+  }
+
+  /** The app accepted the last rotation or recovery: sign with the new key from now on. */
+  async confirmHolder ({ id, domain, appPubKey }) {
+    const app = checkAppKey(appPubKey)
+    const record = await this.#record(id)
+    const { pending } = this.#app(record, domain, app)
+    if (!pending) throw new Error('no rotation is waiting for this app')
+    await this.#setApp(record, domain, app, { signKeyId: pending.keyId, signSeq: pending.seq, pending: undefined })
   }
 
   /** Turn the keep-signed-in grant for one app on or off. */
@@ -191,6 +307,30 @@ export class IdentityWallet {
   }
 
   // ---- inside ----------------------------------------------------------------------
+
+  /** The identity's link to an app on a site; throws when there is none. */
+  #app (record, domain, appPubKey) {
+    const entry = (record.attributes.wallet.apps ?? []).find((a) => a.domain === domain && a.appPubKey === appPubKey)
+    if (!entry) throw new Error('this identity is not linked to that app on that site')
+    return entry
+  }
+
+  async #setApp (record, domain, appPubKey, change) {
+    const wallet = record.attributes.wallet
+    const apps = (wallet.apps ?? []).map((a) => {
+      if (a.domain !== domain || a.appPubKey !== appPubKey) return a
+      const next = { ...a, ...change }
+      for (const k of Object.keys(next)) if (next[k] === undefined) delete next[k]
+      return next
+    })
+    await this.#annotate(record, { ...wallet, apps })
+  }
+
+  async #signAs (keyId, { kind, appPubKey, payload }) {
+    const digest = signDigest({ kind, appPubKey, payload })
+    const der = lowSDer(await this.core.signDigest(keyId, digest))
+    return { holder: hex(await this.core.publicKey(keyId)), signature: hex(der) }
+  }
 
   #view (record) {
     const w = record.attributes.wallet
@@ -295,10 +435,43 @@ export async function verifyIdentity ({ handler, package: pkg, appPubKey, data }
   } catch (e) {
     return { ok: false, reason: `invalid package: ${e.message}` }
   }
+  const mint = mintProvenance(pkg, data.toLowerCase())
+  if (mint.reason) return { ok: false, reason: mint.reason }
   const r = await handler.verify(pkg, { issuer })
   if (!r.ok) return { ok: false, reason: r.reason }
   if (r.kind !== 'presentation' || r.type !== 'AuthBOLT') return { ok: false, reason: 'not an AuthBOLT presentation' }
   if (r.data !== data.toLowerCase()) return { ok: false, reason: 'the presentation carries other data than this challenge' }
   if (r.owner !== r.holder) return { ok: false, reason: 'a presentation must be a self-transfer: it moves the token to another key' }
-  return { ok: true, issuer: r.issuer, holder: r.holder, tokenId: r.tokenId, purpose: decoded.purpose, anchors: r.anchors }
+  if (r.issuer !== mint.issuer) return { ok: false, reason: 'the presented token\'s issuer is not its mint\'s' }
+  return {
+    ok: true, issuer: r.issuer, holder: r.holder, tokenId: r.tokenId, purpose: decoded.purpose, anchors: r.anchors,
+    mintTxid: mint.txid, holderPubKey: mint.signer
+  }
+}
+
+/**
+ * The presented commit (the transaction whose first input carries this auth data) must spend a mint
+ * the package carries. A token whose lineage never passed through a genuine mint proves no ownership
+ * (audit V1); spending a mint, by contrast, needs the issuer key under the covenant's genesis guard,
+ * which the full verify then executes. Returns `{ txid, issuer, signer }` or `{ reason }`; no network.
+ */
+function mintProvenance (pkg, data) {
+  for (const entry of pkg) {
+    let tx
+    try { tx = fromBeef(entry) } catch { continue }
+    const input = tx.inputs?.[0]
+    const chunks = input?.unlockingScript?.chunks ?? []
+    if (!chunks.length || hex(chunks[0].data ?? []) !== data) continue // not the commit
+    const src = input.sourceTransaction
+    if (!src) return { reason: 'the presentation does not carry the mint its token was spent from' }
+    const txid = src.id('hex')
+    if (input.sourceTXID && input.sourceTXID !== txid) return { reason: 'the presentation\'s mint does not match the outpoint its commit spends' }
+    const token = readToken(src, input.sourceOutputIndex)
+    if (!token?.isMint) return { reason: 'the presented token does not come straight from its mint: no proof of ownership' }
+    const issuer = hex(token.issuer)
+    // The key that signed the commit: a pushed 33-byte key that hashes to the mint's owner.
+    const signer = chunks.map((c) => c.data ?? []).find((d) => d.length === 33 && (d[0] === 2 || d[0] === 3) && hex(Hash.hash160(d)) === hex(token.owner))
+    return { txid, issuer, signer: signer ? hex(signer) : undefined }
+  }
+  return { reason: 'the presentation carries other data than this challenge' } // no commit carries it
 }

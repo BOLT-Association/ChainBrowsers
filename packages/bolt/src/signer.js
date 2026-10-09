@@ -17,6 +17,9 @@ const digestOf = (msg) => Utils.toHex(Hash.sha256(msg))
 /** Script signatures must be low-S; a wallet may return either form. */
 const lowS = (sig) => (sig.s.cmp(halfN) > 0 ? new Signature(sig.r, curve.n.sub(sig.s)) : sig)
 
+/** A wallet's DER signature (bytes) in low-S form, as DER bytes. */
+export const lowSDer = (der) => lowS(Signature.fromDER(der)).toDER()
+
 /**
  * Build and sign a transaction with the wallet's key `keyId`.
  * @param core   the wallet core (`publicKey`, `signDigest`)

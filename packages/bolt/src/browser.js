@@ -55,6 +55,9 @@ export function installBolt ({ walletCall, trustedIssuers = [], target = globalT
     return handler.mint(opts)
   }
   api.requestPresentation = (req) => call('/bolt/request', req)
+  // Holder-key signatures (POST /bolt/sign, answered natively: silently under the grant, or through
+  // the wallet's prompt). The wallet builds the digest; the page only names the kind and the payload.
+  api.sign = (req) => call('/bolt/sign', req)
   Object.defineProperty(target, 'BOLT', { value: Object.freeze(api), writable: false, configurable: false, enumerable: true })
   return handler
 }
