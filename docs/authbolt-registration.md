@@ -173,8 +173,8 @@ it never asks Arcade about them.
 default. The sidecar stays available with `-bolt-verify-url` (it then asks p2pd about roots on a
 loopback port). Real presentations and the sidecar's answers to them are recorded into
 `p2p/testdata/contract/verify/recorded.json` by `packages/bolt/scripts/record-verify-contract.mjs`,
-and p2p's tests hold the Go verifier to every recorded verdict and reason. The Go verifier does not
-know auth-data tag 04 (a write) yet.
+and p2p's tests hold the Go verifier to every recorded verdict and reason, the write (tag 04)
+included since b017-native 448de4a.
 
 - **packages/bolt:** an identity module: the data format; a key per AuthBOLT (its own BRC-43
   protocol, keyID kept with the token); app tags and keep-signed-in grants in the token's
