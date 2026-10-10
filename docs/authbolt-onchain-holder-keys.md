@@ -309,6 +309,12 @@ Two more answers (user, 2026-10-10):
    follow-up); and the page's recovery took the oldest identity `BOLT.list()` returned, not the one
    that signed: p2p `86c9e34`.
 7. **Wipe the demo again** (after a backup) and re-register fred on the new flow.
+   **Done (2026-10-10):** the old demo database backed up (`tests/cross-wallet/out/authbolt-demo/
+   demo-backup-20261010-oldchain.sqlite`) and recreated empty; the stack reset to genesis on the
+   patched Teranode (Genesis and Chronicle at block 1, spv-testnet `0ebaa4b`); the demo now starts its
+   own fundd (`start-demo.ps1`, seeded by `fund-demo.mjs`, `-rotate-after 24h`). fred re-registered in
+   Hodos: the token moved to holder 1 on chain (settle seen by Arcade), holder key bound, owner; the
+   wallet labels the identity "fred".
 
 ## Related
 
