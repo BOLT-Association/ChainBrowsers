@@ -192,6 +192,27 @@ test('label: the name the app accepted is kept on that identity\'s link to the a
   assert.equal((await ids.identities())[0].apps[0].label, 'fred.b')
 })
 
+test('resume: the move the app never received is handed over again, rebuilt from the token record, only for the app\'s own data for that count', async () => {
+  const chain = pretendChain()
+  const { ids, app, funder, core } = await registered(chain)
+  const data = rotateData(app, 2)
+  const moved = await ids.rotate({ domain: SITE, appPubKey: app, data, funder, silent: true }) // the page closed before posting it
+  // The app still names holder 1, so the wallet signs with holder 1 for it (kept for that app).
+  const holder1 = hex(Hash.hash160(await core.publicKey('authbolt-0.holder.1')))
+  await ids.sign({ domain: SITE, appPubKey: app, kind: 'signin', payload: '02aa', silent: true, count: 1, holder: holder1 })
+  const again = await ids.answer({ domain: SITE, appPubKey: app, kind: 'resume', payload: data, silent: true })
+  const txids = (pkg) => pkg.map((b) => fromBeef(b).id('hex'))
+  assert.deepEqual(txids(again.package), txids(moved.package), 'the same commit and settle')
+  const after = await ids.sign({ domain: SITE, appPubKey: app, kind: 'refresh', payload: '03bb', silent: true })
+  assert.equal(after.holder, hex(await core.publicKey('authbolt-0.holder.2')), 'handed the move, the app is at holder 2: holder 2 signs')
+  const nothingBroadcast = chain.sent.length
+  await assert.rejects(ids.answer({ domain: SITE, appPubKey: app, kind: 'resume', payload: rotateData(app, 3), silent: true }), /holder/, 'a count the token is not at')
+  await assert.rejects(ids.answer({ domain: SITE, appPubKey: app, kind: 'resume', payload: rotateData(app, 2, 'another challenge'), silent: true }), /other data/)
+  await assert.rejects(ids.answer({ domain: SITE, appPubKey: app, kind: 'resume', payload: registerData(app, 2), silent: true }), /rotate/)
+  await assert.rejects(ids.answer({ domain: SITE, appPubKey: appKey(), kind: 'resume', payload: rotateData(app, 2), silent: true }), /another app/)
+  assert.equal(chain.sent.length, nothingBroadcast, 'resuming signs and broadcasts nothing')
+})
+
 test('rotate: never silently without the keep-signed-in grant', async () => {
   const chain = pretendChain()
   const { ids, app, funder } = await registered(chain, { keep: false })

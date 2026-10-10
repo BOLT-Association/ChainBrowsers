@@ -311,6 +311,8 @@ export class IdentityWallet {
         return this.rotate({ id, domain, appPubKey, data: payload, funder, silent })
       case 'reissue':
         return this.reissue({ id, domain, appPubKey, data: payload, funder, silent })
+      case 'resume':
+        return this.resume({ id, domain, appPubKey, data: payload, silent })
       default:
         throw new Error(`unknown kind ${kind}: signin, refresh, write, rotate or reissue`)
     }
@@ -333,6 +335,35 @@ export class IdentityWallet {
     const wallet = record.attributes.wallet
     const apps = wallet.apps.map((a) => (a.domain === domain && a.appPubKey === app ? { ...a, label: text } : a))
     await this.#annotate(record, { ...wallet, apps })
+  }
+
+  /**
+   * Hand the app a move it never received: the token was moved to holder n and broadcast, but the page
+   * closed before posting the move. `data` is the app's rotation data for count n (deterministic, so the
+   * app can name it again); the token must be at holder n and its last commit must carry exactly that
+   * data. The package is rebuilt from the token record (the settle, and the commit it spends). Nothing is
+   * signed, paid or broadcast. Silent only under the keep-signed-in grant, like a rotation.
+   * @returns `{ package }`: the commit and settle, as atomic BEEF hex
+   */
+  async resume ({ id, domain, appPubKey, data, silent }) {
+    const { app, decoded } = this.#readFor(appPubKey, data, 'rotate', 'only rotate data names a move to hand over again')
+    const record = await this.#chosen({ id, domain, appPubKey: app, silent })
+    const at = record.attributes.wallet.holderCount ?? 0
+    if (at !== decoded.count) throw new Error(`this identity's token is at holder ${at}, not ${decoded.count}: there is no such move to hand over`)
+    const settle = fromBeef(record.beef)
+    const commit = settle.inputs[0].sourceTransaction
+    const carried = commit?.inputs[0]?.unlockingScript?.chunks[0]?.data
+    if (!carried || hex(carried) !== data.toLowerCase()) throw new Error('the token\'s last move carries other data than the app\'s rotation')
+    // Handed the move, the app is at the current holder: drop the older key kept for it (#signingKey).
+    // If the post fails, the next refused signature names the older holder again and keeps it again.
+    const wallet = record.attributes.wallet
+    const apps = (wallet.apps ?? []).map((a) => {
+      if (a.domain !== domain || a.appPubKey !== app) return a
+      const { signCount, ...rest } = a
+      return rest
+    })
+    await this.#annotate(record, { ...wallet, apps })
+    return { package: [commit, settle].map((tx) => hex(toAtomicBeef(tx))) }
   }
 
   /** Turn the keep-signed-in grant for one app on or off. */

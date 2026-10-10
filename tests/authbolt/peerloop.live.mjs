@@ -32,8 +32,9 @@
 //      key?", and the identity's issuer key reissues the token (a new mint, moved to holder key 3, the
 //      app pays) behind Hodos's prompt; signing in works again;
 //   4f. out of step: the wallet moves the token to holder 4 but the page never posts it; signing in
-//      (one click) is refused, the server names the holder it expects (3), and the wallet derives that
-//      key and signs again silently; a write afterwards is signed by holder 3 too;
+//      (one click) is refused, the server names the holder it expects (3), the wallet derives that key
+//      and signs again silently, then hands the server the move it never received (the rotation
+//      challenge is deterministic) and signs in as holder 4; a write afterwards is signed by holder 4;
 //   5. refusals: a made-up presentation at registration, and a signature by no holder key.
 //
 // Before running: the stack up (spv-testnet/stack), Hodos started with
@@ -122,6 +123,8 @@ const secretFile = join(OUT, 'bolt-secret')
 writeFileSync(secretFile, SECRET + '\n')
 const fundSecretFile = join(OUT, 'fund-secret')
 writeFileSync(fundSecretFile, FUND_SECRET + '\n')
+const challengeSecretFile = join(OUT, 'challenge-secret') // keys p2pd's deterministic rotation challenges
+writeFileSync(challengeSecretFile, randomBytes(24).toString('hex') + '\n')
 
 try { execFileSync('docker', ['rm', '-f', 'cb-authbolt-rqlite'], { stdio: 'ignore' }) } catch {}
 execFileSync('docker', ['run', '-d', '--rm', '--name', 'cb-authbolt-rqlite', '-p', `127.0.0.1:${RQLITE_PORT}:4001`, 'rqlite/rqlite:10.3.7'], { stdio: 'ignore' })
@@ -178,7 +181,7 @@ start('p2pd', join(ROOT, 'p2p/results/p2pd.exe'), [
   '-rqlite-url', `http://127.0.0.1:${RQLITE_PORT}`, '-admins', ADMIN, '-app-key', APP_KEY,
   '-bolt-verify-url', 'http://127.0.0.1:8097', '-bolt-secret-file', secretFile,
   '-chaintracks-url', CHAINTRACKS, '-internal-addr', '127.0.0.1:8099', '-headers-file', headersFile,
-  '-rotate-after', `${ROTATE_AFTER_S}s`,
+  '-rotate-after', `${ROTATE_AFTER_S}s`, '-challenge-secret-file', challengeSecretFile,
   ...(NC_FUND ? [] : ['-fund-url', `http://${FUNDD}`, '-fund-secret-file', fundSecretFile]),
 ])
 if (SIDECAR) {
@@ -458,9 +461,13 @@ await evaluate(isPage, 'document.getElementById("signin-submit").click(); true')
 await until('the sign-in prompt', () => signPrompt('Sign in'))
 await clickPrompt('Sign') // the wallet signs with holder 4; the server names holder 3; the retry is silent
 await until('the workspace, with no second prompt', async () => (await screen()) === 'workspace', 60000)
-const inStep = await identityRow(me.identity)
-assert.equal(inStep.seq, 3)
-assert.equal(inStep.holder_pubkey, recovered.holder_pubkey, 'signed in with holder 3, the key the server holds')
+// The wallet then handed the server the move it never received, and signed in as holder 4.
+const inStep = await until('the server to reach holder 4', async () => {
+  const r = await identityRow(me.identity)
+  return r.seq === 4 && r.holder_pubkey ? r : null
+}, 30000)
+assert.notEqual(inStep.holder_pubkey, recovered.holder_pubkey, 'holder key 4 is bound now')
+assert.notEqual(inStep.outpoint, recovered.outpoint)
 const text2 = `signed again ${RUN}`
 await inPage(`
   document.querySelector('#channel-list [data-channel="1"]').click()
@@ -473,8 +480,8 @@ const sent2 = await until('the message after the retry to be signed and stored',
   return page.messages?.find((m) => m.text === text2 && m.signed)
 })
 const proof2 = await inPage(`return (await fetch('/api/messages/${sent2.id}/proof')).json()`)
-assert.equal(proof2.holder, recovered.holder_pubkey, 'the wallet keeps signing with holder 3 for this app')
-step('out of step: the wallet had moved to holder 4 unposted; the sign-in was refused, the server named holder 3, and the wallet derived that key and signed again silently (one click); a message afterwards is signed by holder 3 too')
+assert.equal(proof2.holder, inStep.holder_pubkey, 'the wallet signs with holder 4 again')
+step('out of step: the wallet had moved to holder 4 unposted; the sign-in was refused, the server named holder 3, the wallet signed with it silently, then handed over the move the server never received (deterministic rotation challenge) and signed in as holder 4 (one click in all); a message afterwards is signed by holder 4')
 
 // ---- 5. refusals ------------------------------------------------------------------------------------
 const refusals = await inPage(`${CLIENT}
