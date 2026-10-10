@@ -254,6 +254,17 @@ Two more answers (user, 2026-10-10):
 5. **Hodos:** the regenerated bundles; the wallet accepts an app's signed funding input (it signs only
    its own token input) and shows who pays;
    `hodos_tests`, `tsc -b`.
+   **Built (2026-10-10):** Hodos `1098b93d` (red) + `c6434ff9`. The shell's checks
+   (`BoltRequest.h`): `/bolt/request` is a registration only (70 bytes, tag 01, count ≥ 1, never
+   silent); `/bolt/sign` kinds signin, refresh, write, rotate (tag 05), reissue (tag 06, never
+   silent). The coin relay: the page's request carries `fundId` (the shim keeps `fund` under it);
+   the wallet in the prompt asks with `bolt_fund` (approval overlay only), the shell runs the page's
+   `__boltFund` in the frame that asked (still on that site), and the page's `POST
+   /bolt/fund-result` is taken only from that frame with that id and handed to the overlay's
+   `boltFundResult`, which feeds `textFunder`. The prompt offers only identities whose token has
+   not moved, says the site pays, and has rotate/reissue screens; the silent-presentation path is
+   gone. `hodos_tests` 399 pass (negative controls in Hodos relay round W-07b), `tsc -b` clean, the
+   identity code still a lazy chunk, the shell's changed files compile. Not live-run yet: step 6.
 6. **Live:** `tests/authbolt/peerloop.live.mjs` registers on chain, signs in, rotates on chain,
    recovers. Negative controls: an unbroadcast settle is refused at registration; a rotation with
    a skipped count is refused.
