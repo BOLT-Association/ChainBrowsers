@@ -145,6 +145,21 @@ Recovery (reissuance; the token at the lost holder key is dead)
   wallet adds it to the commit and settle and signs the token input. Rotating silently therefore
   costs the person nothing.
 
+## Step 4 decisions (user, 2026-10-10)
+
+- **The wallet reaches the app's funder through the page.** When the wallet needs a coin, the
+  browser asks the page over its existing bridge (Hodos: the `wallet_call` IPC; bsv-browser: the
+  React Native WebView bridge `window.ReactNativeWebView.postMessage`, which `window.BOLT` already
+  uses), the page asks p2pd, and p2pd asks the funding service. The wallet never calls a site
+  itself. ("Does bsvbrowser have an IPC? If so num 1": it has.)
+- **The verifier gets a rotate rule.** `verifyIdentity`, b017-native and boltverifyd accept rotate
+  data together with the token's recorded outpoint: the commit must spend that outpoint and carry the
+  data, and the commit and settle must be funded and seen. The verdict gives the new holder's hash,
+  the count and the new outpoint. It gets the same recording and agreement tests as registration.
+- **p2pd asks for a rotation in its sign-in and keep-alive answers.** When p2pd wants an identity
+  to rotate, those answers carry a rotate challenge, and the page then rotates silently under the
+  grant. No new channel.
+
 ## App-funded transactions: what b017 allows
 
 b017's covenant fixes the layout (`singleSpend.ts`): inputs `[token, proof?, funding?]`, outputs
