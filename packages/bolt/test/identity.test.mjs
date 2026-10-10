@@ -187,3 +187,18 @@ test('verifyIdentity: a registration must spend the token\'s own mint, carried i
   assert.match((await verifyIdentity({ handler: site, package: moved, appPubKey: app, data: again })).reason, /mint/)
 })
 
+
+test('several identities for one app: the most recently used one comes first and signs silently', async () => {
+  const chain = pretendChain()
+  const { ids, app, id: older, funder } = await registered(chain)
+  // A new account on the same site (a wiped server, or a second account): a new identity registers.
+  const newer = await ids.create()
+  const data = encodeAuthData({ purpose: 'register', appPubKey: app, challengeHash: challenge('again'), count: 1 })
+  await ids.present({ id: newer.id, domain: SITE, appPubKey: app, data, keepSignedIn: true, funder })
+  assert.deepEqual((await ids.forApp({ domain: SITE, appPubKey: app })).map((t) => t.issuer), [newer.issuer, older.issuer], 'the prompt offers the newest first')
+  assert.equal((await ids.sign({ domain: SITE, appPubKey: app, kind: 'signin', payload: '02aa', silent: true })).identity, newer.issuer)
+  // The person picks the older one in the prompt: from then on it is the one used.
+  await ids.sign({ id: older.id, domain: SITE, appPubKey: app, kind: 'signin', payload: '02bb', silent: false })
+  assert.equal((await ids.forApp({ domain: SITE, appPubKey: app }))[0].issuer, older.issuer)
+  assert.equal((await ids.sign({ domain: SITE, appPubKey: app, kind: 'refresh', payload: '03cc', silent: true })).identity, older.issuer)
+})

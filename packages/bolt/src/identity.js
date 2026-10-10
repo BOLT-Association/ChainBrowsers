@@ -183,6 +183,13 @@ export class IdentityWallet {
     this.feePerKb = feePerKb
   }
 
+  #lastStamp = 0
+  /** A clock that never repeats: two uses in the same millisecond still have an order. */
+  #now () {
+    this.#lastStamp = Math.max(Date.now(), this.#lastStamp + 1)
+    return this.#lastStamp
+  }
+
   /** Every identity this wallet holds, with the apps it is linked to. */
   async identities () {
     const records = await this.core.store.list({ type: 'AuthBOLT' })
@@ -193,7 +200,14 @@ export class IdentityWallet {
   /** The identities linked to this app on this site (what that site may be told about). */
   async forApp ({ domain, appPubKey }) {
     const key = checkAppKey(appPubKey)
+    const used = (t) => {
+      const a = t.apps.find((x) => x.domain === domain && x.appPubKey === key)
+      return a.lastUsedAt ?? a.linkedAt ?? 0
+    }
+    // The identity last used with this app first: the one the person means (the prompts offer it
+    // first, and the silent path signs with it).
     return (await this.identities()).filter((t) => t.apps.some((a) => a.domain === domain && a.appPubKey === key))
+      .sort((x, y) => used(y) - used(x))
   }
 
   /** Mint a new identity under the next counted key (`authbolt-<i>`), paid by this wallet. */
@@ -424,6 +438,7 @@ export class IdentityWallet {
       const linked = (await this.forApp({ domain, appPubKey }))
         .find((t) => t.apps.some((a) => a.domain === domain && a.appPubKey === appPubKey && a.keepSignedIn))
       if (!linked) throw needsPrompt('the user has not chosen to stay signed in to this app')
+      await this.#link(await this.#record(linked.id), { domain, appPubKey }) // marks it used
       return this.#record(linked.id)
     }
     if (typeof id !== 'string' || !id) throw new Error('a prompted request needs the identity the person chose')
@@ -488,7 +503,7 @@ export class IdentityWallet {
     const apps = [...(wallet.apps ?? [])]
     const i = apps.findIndex((a) => a.domain === domain && a.appPubKey === appPubKey)
     const was = i >= 0 ? apps[i] : { domain, appPubKey, keepSignedIn: false, linkedAt: Date.now() }
-    const next = { ...was, keepSignedIn: keepSignedIn === undefined ? was.keepSignedIn : !!keepSignedIn }
+    const next = { ...was, keepSignedIn: keepSignedIn === undefined ? was.keepSignedIn : !!keepSignedIn, lastUsedAt: this.#now() }
     if (i >= 0) apps[i] = next; else apps.push(next)
     await this.#annotate(record, { ...wallet, apps })
   }
