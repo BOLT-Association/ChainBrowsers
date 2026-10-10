@@ -2,8 +2,8 @@
 //
 // Everything is real except the names: Hodos in spv mode on the regtest stack (its own verified
 // header chain, Arcade only), p2pd with its own verified header chain synced from Arcade's
-// chaintracks checking presentations itself (the Go port of b017: roots judged by its own chain,
-// Arcade asked only whether an anchor was seen; VERIFIER=sidecar uses the bolt-verify sidecar), and the
+// chaintracks, which asks boltverifyd to check presentations (the Go port of b017: roots judged by
+// p2pd's chain, Arcade asked only whether an anchor was seen; VERIFIER=sidecar uses the Node sidecar), and the
 // person's clicks in Hodos's own identity prompt. PeerLoop is served over https as app.lab, a made-up
 // name the browser maps to this machine (so window.BOLT is injected and no real site is involved).
 //
@@ -45,13 +45,12 @@ const RQLITE_PORT = 14023
 const CHAINTRACKS = 'http://127.0.0.1:8083/chaintracks/v2'
 const SECRET = randomBytes(24).toString('hex')
 const APP_KEY = PrivateKey.fromRandom().toPublicKey().toString()
-// Who checks presentations: p2pd itself (default) or the bolt-verify sidecar (VERIFIER=sidecar).
+// Who checks presentations for p2pd: boltverifyd (default) or the bolt-verify sidecar (VERIFIER=sidecar).
 const SIDECAR = process.env.VERIFIER === 'sidecar'
 // Negative control (NC_NO_VERIFIER=1): nothing p2pd is shown can be checked, so the run must FAIL at
-// registration. In process, p2pd can reach neither Arcade (is the anchor seen?) nor chaintracks (its
-// header chain stays at genesis, so no merkle path proves anything); with the sidecar, p2pd asks a
-// sidecar that is not there. A pass with this set would mean the test does not depend on the
-// presentations being verified.
+// registration. The verifier can reach neither Arcade (is the anchor seen?) nor p2pd's header chain
+// (so no merkle path proves anything). A pass with this set would mean the test does not depend on
+// the presentations being verified.
 const NC = !!process.env.NC_NO_VERIFIER
 const NOWHERE = 'http://127.0.0.1:1'
 

@@ -158,8 +158,8 @@ the app key to word its prompt and refuses data whose app key is not the one ask
 PeerLoop page ──/bolt/request──> Hodos C++ ──overlay──> trusted prompt (React + packages/bolt)
      ▲                              │                     │ wallet calls as Hodos itself
      └──────── package ─────────────┘ <── bolt_result ────┘
-PeerLoop page ──package──> p2pd (b017-native, in process) ──> Arcade (anchor seen?)
-                               │ roots judged by its own verified chain
+PeerLoop page ──package──> p2pd ──> boltverifyd (b017-native) ──> Arcade (anchor seen?)
+                               │ roots judged by p2pd's own verified chain (loopback)
 p2pd header chain <── candidate headers ── Arcade chaintracks (+ tip stream)
 ```
 
@@ -170,13 +170,14 @@ regtest's fixed difficulty, pinned genesis, linkage, 2 h future limit, most work
 synced from chaintracks and woken by its tip stream. p2pd judges merkle roots against that chain;
 it never asks Arcade about them.
 
-**The verifier (2026-10-09).** p2pd checks presentations in process on the Go port of b017
-(`BOLT-Association/b017-native`, `go/authbolt`), which replaced the bolt-verify sidecar as the
-default. The sidecar stays available with `-bolt-verify-url` (it then asks p2pd about roots on a
-loopback port). Real presentations and the sidecar's answers to them are recorded into
+**The verifier (2026-10-10).** p2pd links no token-script code; it always asks a verifier service
+over loopback and answers that service's root questions from its own chain. The default is
+boltverifyd (`p2p/boltverifyd`, a nested Go module on the Go port of b017,
+`BOLT-Association/b017-native` `go/authbolt`, plus a mint-provenance check); the bolt-verify sidecar
+is the alternative. (On 2026-10-09 p2pd briefly checked in process; that moved into boltverifyd so
+p2pd keeps zero dependencies.) Real presentations and the sidecar's answers to them are recorded into
 `p2p/testdata/contract/verify/recorded.json` by `packages/bolt/scripts/record-verify-contract.mjs`,
-and p2p's tests hold the Go verifier to every recorded verdict and reason, the write (tag 04)
-included since b017-native 448de4a.
+and boltverifyd's tests hold it to every recorded verdict and reason, the write (tag 04) included.
 
 - **packages/bolt:** an identity module: the data format; a key per AuthBOLT (its own BRC-43
   protocol, keyID kept with the token); app tags and keep-signed-in grants in the token's
