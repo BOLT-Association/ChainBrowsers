@@ -205,6 +205,15 @@ Two more answers (user, 2026-10-10):
    `live/hodos.live.mjs`.
 3. **boltverifyd and the Node sidecar:** the anchor rule (commit and settle seen) and the verdict
    fields; b017-native's `go/authbolt` the same.
+   **Built (2026-10-10):** b017-native `02d78e6` gives Go's `Verify` the same rules as
+   `verifyIdentity` (register and reissue only; V1's unfunded shape refused; `Holder` = the new
+   holder's hash, `Count`); its tests build funded moves and agree with the JS reference on all 11
+   cases; `vectors/authbolt.json` re-recorded. `scripts/record-verify-contract.mjs` records real
+   on-chain registrations: `p2p/testdata/contract/verify/recorded.json` (accepted, accepted_reissue,
+   other_data, other_app, bad_data, signin_data, invalid_package, off_chain, not_from_mint,
+   anchor_unseen, bad_request, unauthorized). boltverifyd drops its own mint-rule copy and
+   `holderPubKey` and answers `count`; p2p's sidecar client and StubVerifier are now held to that
+   recording (the hand-derived `cases.json` is gone).
 4. **p2pd:** `identities` gains `holder_pkh`, `count` and `outpoint` (a migration); register
    records them; the first signature binds the key; `POST /api/auth/rotate` takes a commit and
    settle; `POST /api/auth/recover` takes a reissued package; the web client drops
