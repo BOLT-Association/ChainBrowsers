@@ -189,3 +189,25 @@ test('answer: signin, refresh and write sign; rotate and reissue move the token;
   }
   for (const gone of ['rotateHolder', 'recoverHolder', 'confirmHolder', 'refresh']) assert.equal(typeof ids[gone], 'undefined', gone)
 })
+
+test('verifyIdentity: a rotation must spend the token\'s recorded outpoint; the verdict names the next holder, the count and the new outpoint', async () => {
+  const chain = pretendChain()
+  const { ids, app, core, funder, created, shown } = await registered(chain)
+  const { wallet } = protoWalletOn(chain)
+  const handler = new BoltHandler({ core: brc100Core({ wallet, broadcast: chain.broadcast }) })
+  const recorded = shown.id // what the app recorded at registration (the verdict's tokenId)
+  const data = rotateData(app, 2)
+  const r = await ids.rotate({ domain: SITE, appPubKey: app, data, funder, silent: true })
+  const v = await verifyIdentity({ handler, package: r.package, appPubKey: app, data, outpoint: recorded })
+  assert.equal(v.ok, true, v.reason)
+  assert.equal(v.purpose, 'rotate')
+  assert.equal(v.issuer, created.issuer)
+  assert.equal(v.count, 2)
+  assert.equal(v.holder, hex(Hash.hash160(await core.publicKey('authbolt-0.holder.2'))))
+  assert.equal(v.tokenId, r.id, 'the new outpoint the app records next')
+  // Not the outpoint the app recorded (a replay of an older move, or another token), or none at all.
+  assert.match((await verifyIdentity({ handler, package: r.package, appPubKey: app, data, outpoint: r.id })).reason, /outpoint/)
+  assert.match((await verifyIdentity({ handler, package: r.package, appPubKey: app, data })).reason, /outpoint/)
+  // Rotate data with a registration package is no rotation.
+  assert.equal((await verifyIdentity({ handler, package: shown.package, appPubKey: app, data, outpoint: created.id })).ok, false)
+})

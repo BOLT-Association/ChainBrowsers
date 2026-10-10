@@ -7,7 +7,7 @@
 //
 // The real sidecar (createVerifyServer + verifyIdentity) answers real registrations, made by an
 // IdentityWallet on the package's pretend chain (test/harness.mjs) and paid by an app's funder: an
-// accepted registration and reissue, and each way one is refused. p2p holds its sidecar client, its
+// accepted registration, rotation and reissue, and each way one is refused. p2p holds its sidecar client, its
 // StubVerifier and boltverifyd to these answers.
 import http from 'node:http'
 import { writeFileSync } from 'node:fs'
@@ -49,10 +49,13 @@ const counted = (purpose, text, count) => encodeAuthData({ purpose, appPubKey: a
 // Registered on chain: the token moves from its mint to holder 1.
 const id = await ids.create()
 const register = counted('register', 'register', 1)
-const { package: pkg } = await ids.present({ id: id.id, domain: SITE, appPubKey: app, data: register, keepSignedIn: true, funder })
+const { package: pkg, id: registeredAt } = await ids.present({ id: id.id, domain: SITE, appPubKey: app, data: register, keepSignedIn: true, funder })
+// Rotated at the app's request: the token moves on from holder 1 (at registeredAt) to holder 2.
+const rotate = counted('rotate', 'rotate', 2)
+const { package: rotated, id: rotatedAt } = await ids.rotate({ domain: SITE, appPubKey: app, data: rotate, funder, silent: true })
 const [moved] = await ids.identities()
 // Reissued after a lost holder key: a new mint of the same issuer, moved to holder 2.
-const reissue = counted('reissue', 'reissue', 2)
+const reissue = counted('reissue', 'reissue', 3)
 const { package: reissued } = await ids.reissue({ id: moved.id, domain: SITE, appPubKey: app, data: reissue, funder, silent: false })
 
 // V1's shape: an unfunded self-transfer carrying register data, never broadcast.
@@ -74,6 +77,9 @@ const signin = encodeAuthData({ purpose: 'signin', appPubKey: app, challengeHash
 const cases = [
   ['accepted', { package: pkg, appPubKey: app, data: register }],
   ['accepted_reissue', { package: reissued, appPubKey: app, data: reissue }],
+  ['accepted_rotation', { package: rotated, appPubKey: app, data: rotate, outpoint: registeredAt }],
+  ['rotation_stale_outpoint', { package: rotated, appPubKey: app, data: rotate, outpoint: rotatedAt }],
+  ['rotation_no_outpoint', { package: rotated, appPubKey: app, data: rotate }],
   ['other_data', { package: pkg, appPubKey: app, data: counted('register', 'another registration', 1) }],
   ['other_app', { package: pkg, appPubKey: otherApp, data: register }],
   ['bad_data', { package: pkg, appPubKey: app, data: 'abcd' }],

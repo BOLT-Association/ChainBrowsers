@@ -104,3 +104,21 @@ test('headersTracker: asks the app server whether a root is in ITS verified chai
   // An app server that cannot be reached is not a yes.
   assert.equal(await isValid('aa'.repeat(32), 7), false)
 })
+
+test('POST /verify: a rotation is checked against the outpoint the app recorded', async () => {
+  const { ids, server, url, app, id, funder } = await setup()
+  try {
+    const register = encodeAuthData({ purpose: 'register', appPubKey: app, challengeHash: challenge('r1'), count: 1 })
+    const reg = await ids.present({ id: id.id, domain: 'peerloop.example', appPubKey: app, data: register, keepSignedIn: true, funder })
+    const data = encodeAuthData({ purpose: 'rotate', appPubKey: app, challengeHash: challenge('rot'), count: 2 })
+    const { package: pkg, id: next } = await ids.rotate({ domain: 'peerloop.example', appPubKey: app, data, funder, silent: true })
+    const r = await (await post(url, { package: pkg, appPubKey: app, data, outpoint: reg.id })).json()
+    assert.equal(r.ok, true, r.reason)
+    assert.equal(r.purpose, 'rotate')
+    assert.equal(r.count, 2)
+    assert.equal(r.tokenId, next)
+    const stale = await (await post(url, { package: pkg, appPubKey: app, data, outpoint: next })).json()
+    assert.match(stale.reason, /recorded outpoint/)
+    assert.equal((await post(url, { package: pkg, appPubKey: app, data, outpoint: 7 })).status, 400, 'an outpoint is text')
+  } finally { server.close() }
+})

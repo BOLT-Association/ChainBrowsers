@@ -1,7 +1,8 @@
 // bolt-verify: an AuthBOLT check for an app server that cannot run b017 itself (PeerLoop's p2pd is
 // standard-library Go). One route:
 //
-//   POST /verify  { package: [commit, settle], appPubKey, data }  ->  verifyIdentity's answer
+//   POST /verify  { package: [commit, settle], appPubKey, data, outpoint? }  ->  verifyIdentity's answer
+//                 (outpoint: for a rotation, the token's outpoint the app recorded)
 //
 // A refusal is an ordinary 200 answer `{ ok: false, reason }`; 4xx means the request itself was
 // wrong. Every request must carry `Authorization: Bearer <secret>`. Bind it to loopback.
@@ -53,12 +54,13 @@ export function createVerifyServer ({ handler, secret }) {
       if (tooBig) return reply(res, 413, { error: `body over ${MAX_BODY} bytes` })
       let body
       try { body = JSON.parse(Buffer.concat(chunks).toString('utf8')) } catch { return reply(res, 400, { error: 'invalid JSON' }) }
-      const { package: pkg, appPubKey, data } = body ?? {}
-      if (!Array.isArray(pkg) || pkg.length < 2 || pkg.length > 4 || !pkg.every(isHexString) || !isHexString(appPubKey) || !isHexString(data)) {
-        return reply(res, 400, { error: 'want { package: [hex, hex], appPubKey: hex, data: hex }' })
+      const { package: pkg, appPubKey, data, outpoint } = body ?? {}
+      if (!Array.isArray(pkg) || pkg.length < 2 || pkg.length > 4 || !pkg.every(isHexString) || !isHexString(appPubKey) || !isHexString(data) ||
+        (outpoint !== undefined && typeof outpoint !== 'string')) {
+        return reply(res, 400, { error: 'want { package: [hex, hex], appPubKey: hex, data: hex, outpoint?: "txid.vout" }' })
       }
       try {
-        const r = await verifyIdentity({ handler, package: pkg, appPubKey, data })
+        const r = await verifyIdentity({ handler, package: pkg, appPubKey, data, outpoint })
         reply(res, 200, r)
       } catch (e) {
         reply(res, 200, { ok: false, reason: `verification failed: ${e?.message ?? e}` })

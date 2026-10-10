@@ -463,13 +463,17 @@ export class IdentityWallet {
  * app's data that spends the token's own mint (so only the issuer key could sign it), then a settle
  * to the identity's next holder, both funded and accepted by the network (re-sent here; "seen" is
  * enough: it will be mined).
+ * A rotation (rotate data) is checked the same way, except that its commit must spend `outpoint`,
+ * the token's outpoint the app recorded (the last verdict's `tokenId`), instead of a mint.
  * @param handler    a BoltHandler (its core's broadcaster and headers judge the package)
  * @param appPubKey  this app's key: the data must name it
  * @param data       the auth data this app issued for this challenge (hex)
- * @returns `{ ok, reason? }`, and when ok `{ issuer, holder, count, tokenId, purpose, anchors, mintTxid }`:
- *          `holder` is the new holder key's hash (its public key comes with its first signature)
+ * @param outpoint   for a rotation: the token's recorded outpoint (`txid.vout`)
+ * @returns `{ ok, reason? }`, and when ok `{ issuer, holder, count, tokenId, purpose, anchors, mintTxid? }`:
+ *          `holder` is the new holder key's hash (its public key comes with its first signature), and
+ *          `tokenId` the token's new outpoint
  */
-export async function verifyIdentity ({ handler, package: pkg, appPubKey, data }) {
+export async function verifyIdentity ({ handler, package: pkg, appPubKey, data, outpoint }) {
   let decoded, app
   try {
     app = checkAppKey(appPubKey)
@@ -478,7 +482,8 @@ export async function verifyIdentity ({ handler, package: pkg, appPubKey, data }
     return { ok: false, reason: e.message }
   }
   if (decoded.appPubKey !== app) return { ok: false, reason: 'the auth data names another app' }
-  if (!['register', 'reissue'].includes(decoded.purpose)) return { ok: false, reason: `${decoded.purpose} data does not register an identity` }
+  const rotating = decoded.purpose === 'rotate'
+  if (!rotating && !['register', 'reissue'].includes(decoded.purpose)) return { ok: false, reason: `${decoded.purpose} data does not register an identity` }
   let issuer
   try {
     const named = pkg.map((entry) => readToken(fromBeef(entry))).find(Boolean)
@@ -487,7 +492,7 @@ export async function verifyIdentity ({ handler, package: pkg, appPubKey, data }
   } catch (e) {
     return { ok: false, reason: `invalid package: ${e.message}` }
   }
-  const mint = mintProvenance(pkg, data.toLowerCase())
+  const mint = rotating ? spendsOutpoint(pkg, data.toLowerCase(), outpoint) : mintProvenance(pkg, data.toLowerCase())
   if (mint.reason) return { ok: false, reason: mint.reason }
   const r = await handler.verify(pkg, { issuer })
   if (!r.ok) return { ok: false, reason: r.reason }
@@ -495,11 +500,31 @@ export async function verifyIdentity ({ handler, package: pkg, appPubKey, data }
   if (r.kind === 'presentation') return { ok: false, reason: 'a registration must be on chain: this move was never funded or broadcast' }
   if (r.kind !== 'transfer') return { ok: false, reason: 'a registration moves the token once (a commit and a settle)' }
   if (r.data !== data.toLowerCase()) return { ok: false, reason: 'the presentation carries other data than this challenge' }
-  if (r.issuer !== mint.issuer) return { ok: false, reason: 'the presented token\'s issuer is not its mint\'s' }
+  if (!rotating && r.issuer !== mint.issuer) return { ok: false, reason: 'the presented token\'s issuer is not its mint\'s' }
   return {
     ok: true, issuer: r.issuer, holder: r.owner, count: decoded.count, tokenId: r.tokenId, purpose: decoded.purpose,
-    anchors: r.anchors, mintTxid: mint.txid
+    anchors: r.anchors, ...(rotating ? {} : { mintTxid: mint.txid })
   }
+}
+
+/**
+ * A rotation's commit (the transaction whose first input carries this auth data) must spend the
+ * token's recorded outpoint: the move continues the token the app knows, from the holder it knows.
+ * Returns `{}` or `{ reason }`; no network.
+ */
+function spendsOutpoint (pkg, data, outpoint) {
+  if (typeof outpoint !== 'string' || !/^[0-9a-f]{64}\.\d+$/i.test(outpoint)) return { reason: 'a rotation needs the token\'s recorded outpoint' }
+  for (const entry of pkg) {
+    let tx
+    try { tx = fromBeef(entry) } catch { continue }
+    const input = tx.inputs?.[0]
+    const chunks = input?.unlockingScript?.chunks ?? []
+    if (!chunks.length || hex(chunks[0].data ?? []) !== data) continue // not the commit
+    const spent = `${input.sourceTXID ?? input.sourceTransaction?.id('hex')}.${input.sourceOutputIndex}`
+    if (spent !== outpoint.toLowerCase()) return { reason: 'the rotation does not spend the token\'s recorded outpoint' }
+    return {}
+  }
+  return { reason: 'the presentation carries other data than this challenge' } // no commit carries it
 }
 
 /**
