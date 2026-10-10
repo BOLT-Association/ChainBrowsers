@@ -20,6 +20,9 @@ export const PAGE_METHODS = {
   // write): the wallet signs silently only under the person's keep-signed-in grant and only what
   // the app's published tiers call silent; otherwise it asks in its own prompt.
   sign: { asks: false },
+  // The name the app accepted for an identity linked to it (after a successful sign-in): the wallet
+  // keeps it to show in its prompts instead of a key. Never asks; the name is the app's text.
+  label: { asks: false },
   transfer: { asks: true },
   pay: { asks: true },
   melt: { asks: true },

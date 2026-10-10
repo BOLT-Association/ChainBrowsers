@@ -302,6 +302,25 @@ export class IdentityWallet {
     }
   }
 
+  /**
+   * Keep the name an app accepted for identity `identity` (its issuer key) on that identity's link
+   * to the app on this site, so the wallet can show "fred · peerloop.example" instead of a key. The
+   * page reports it after a successful sign-in (the wallet never sees the app's answer), and may label
+   * only an identity already linked to it. The name is the app's text, shown as such.
+   */
+  async label ({ domain, appPubKey, identity, name }) {
+    const app = checkAppKey(appPubKey)
+    const text = typeof name === 'string' ? name.trim() : ''
+    // eslint-disable-next-line no-control-regex
+    if (!text || [...text].length > 64 || /[\u0000-\u001f\u007f]/.test(text)) throw new Error('a name is 1 to 64 characters of text')
+    const linked = (await this.forApp({ domain, appPubKey: app })).find((t) => t.issuer === String(identity).toLowerCase())
+    if (!linked) throw new Error('that identity is not linked to this app on this site')
+    const record = await this.#record(linked.id)
+    const wallet = record.attributes.wallet
+    const apps = wallet.apps.map((a) => (a.domain === domain && a.appPubKey === app ? { ...a, label: text } : a))
+    await this.#annotate(record, { ...wallet, apps })
+  }
+
   /** Turn the keep-signed-in grant for one app on or off. */
   async setKeepSignedIn ({ id, domain, appPubKey, keep }) {
     const record = await this.#record(id)

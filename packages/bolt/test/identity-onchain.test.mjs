@@ -173,6 +173,25 @@ test('sign: a holder the wallet does not hold is refused, and so is a count past
   assert.equal(hex(Hash.hash160(Utils.toArray(s.holder, 'hex'))), holder1)
 })
 
+test('label: the name the app accepted is kept on that identity\'s link to the app, only for an identity linked to it', async () => {
+  const chain = pretendChain()
+  const { ids, app, created } = await registered(chain)
+  await ids.label({ domain: SITE, appPubKey: app, identity: created.issuer, name: '  fred  ' })
+  const [view] = await ids.identities()
+  assert.equal(view.apps.find((a) => a.appPubKey === app).label, 'fred', 'trimmed')
+  await ids.label({ domain: SITE, appPubKey: app, identity: created.issuer, name: 'fred.b' })
+  assert.equal((await ids.identities())[0].apps[0].label, 'fred.b', 'a later name replaces it')
+  // Another site, another app, or an identity this app never saw: nothing to label.
+  await assert.rejects(ids.label({ domain: 'other.example', appPubKey: app, identity: created.issuer, name: 'x' }), /not linked/)
+  await assert.rejects(ids.label({ domain: SITE, appPubKey: appKey(), identity: created.issuer, name: 'x' }), /not linked/)
+  await assert.rejects(ids.label({ domain: SITE, appPubKey: app, identity: appKey(), name: 'x' }), /not linked/)
+  // A name is short text: no control characters, at most 64 characters.
+  for (const bad of ['', '   ', 'a\nb', 'a\u0000', 'x'.repeat(65), 7]) {
+    await assert.rejects(ids.label({ domain: SITE, appPubKey: app, identity: created.issuer, name: bad }), /name/)
+  }
+  assert.equal((await ids.identities())[0].apps[0].label, 'fred.b')
+})
+
 test('rotate: never silently without the keep-signed-in grant', async () => {
   const chain = pretendChain()
   const { ids, app, funder } = await registered(chain, { keep: false })

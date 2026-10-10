@@ -151,6 +151,15 @@ test('sign rides the bridge to the wallet (/bolt/sign), which signs with the hol
   await assert.rejects(page({ walletCall: async () => ({ error: 'BOLT: NEEDS_PROMPT' }) }).sign(req), /NEEDS_PROMPT/)
 })
 
+test('label rides the bridge to the wallet (/bolt/label): the name the app accepted for this identity', { skip }, async () => {
+  const asked = []
+  const wallet = { walletCall: async (method, endpoint, args) => { asked.push([method, endpoint, args]); return { ok: true } } }
+  const req = { appPubKey: '02' + 'ab'.repeat(32), identity: '03' + 'cd'.repeat(32), name: 'fred' }
+  assert.deepEqual(await page(wallet).label(req), { ok: true })
+  assert.deepEqual(asked, [['bolt/label', '/bolt/label', req]])
+  await assert.rejects(page({ walletCall: async () => ({ error: 'BOLT: that identity is not linked' }) }).label(req), /not linked/)
+})
+
 test('getKey() rides the bridge to the BRC-100 endpoint; a wallet error is thrown', { skip }, async () => {
   const wallet = fakeWallet(pretendChain())
   const key = await page(wallet).getKey()

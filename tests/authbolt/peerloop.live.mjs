@@ -251,7 +251,10 @@ const signPrompt = async (title) => {
   const t = await promptText().catch(() => '')
   return t.includes(`${title} on app.lab`) && /with your AuthBOLT identity/.test(t) ? t : null
 }
-await until('the sign-in prompt after registering', () => signPrompt('Sign in'), 180000)
+await until('the sign-in prompt after registering', () => signPrompt('Sign in'), 180000).catch(async (e) => {
+  console.log(`the prompt says:\n${await promptText().catch(() => '(no prompt)')}`) // what the person would read
+  throw e
+})
 await capture(prompt, join(OUT, '2-signin-prompt.png')).catch(() => {})
 const me0 = await until('the identity to be recorded', async () => (await rows(`SELECT identity FROM users WHERE name = '${ADMIN}'`))[0]?.identity || null)
 const registered = await identityRow(me0)
@@ -271,6 +274,21 @@ assert.match(me.identity, /^0[23][0-9a-f]{64}$/)
 const bound = await identityRow(me0)
 assert.match(bound.holder_pubkey, /^0[23][0-9a-f]{64}$/, 'the first signature binds the holder key')
 assert.notEqual(bound.holder_pubkey, me0, 'the holder key is not the issuer key')
+// After the sign-in succeeded the page told the wallet the account name (BOLT.label); the wallet keeps
+// it on this identity's link to this app here (read from the wallet's own token table, as Hodos itself).
+const keptName = await until('the wallet to keep the account name', async () => {
+  const { rows } = await (await fetch('http://127.0.0.1:31401/boltTokens', {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ op: 'list', status: 'held', type: 'AuthBOLT' }),
+  })).json()
+  for (const r of rows ?? []) {
+    const a = typeof r.attributes === 'string' ? JSON.parse(r.attributes) : r.attributes
+    const link = a?.wallet?.apps?.find((x) => x.domain === `${NAME}:${PORT}` && x.appPubKey === APP_KEY)
+    if (r.issuer === me0 && link?.label) return link.label
+  }
+  return null
+}, 20000)
+assert.equal(keptName, ADMIN)
+step(`the wallet keeps the name the app accepted, "${keptName}", on this identity's link (told after the sign-in succeeded)`)
 await capture(isPage, join(OUT, '3-workspace.png')).catch(() => {})
 step(`signed in as ${me.name}: holder key 1 (${bound.holder_pubkey.slice(0, 12)}…, whose hash the settle pays) signed and is now bound; identity ${me.identity.slice(0, 12)}…`)
 
@@ -335,6 +353,7 @@ const rolePrompt = await until('the prompt for the role change', () => signPromp
 assert.match(rolePrompt, /user\.role/)
 assert.match(rolePrompt, /PATCH \/api\/admin\/users\//)
 assert.match(rolePrompt, /moderator/)
+assert.ok(rolePrompt.includes(`As ${ADMIN}`), 'the prompt names the account, not only a key')
 await capture(prompt, join(OUT, '4c-role-prompt.png')).catch(() => {})
 await clickPrompt('Sign this change')
 assert.equal((await roleChange).role, 'moderator')

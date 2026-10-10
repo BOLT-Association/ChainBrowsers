@@ -91,6 +91,9 @@ export function installBolt ({ walletCall, trustedIssuers = [], target = globalT
   // the wallet's prompt), and the token's moves the app asks for (rotate, reissue). The wallet builds
   // the digest or the transactions; the page only names the kind and the payload.
   api.sign = (req) => withFund('/bolt/sign', req)
+  // The name the app accepted for an identity (reported after a successful sign-in): the wallet keeps it
+  // on that identity's link to this site, to show instead of a key (POST /bolt/label, never prompted).
+  api.label = (req) => call('/bolt/label', req)
   Object.defineProperty(target, 'BOLT', { value: Object.freeze(api), writable: false, configurable: false, enumerable: true })
   return handler
 }
