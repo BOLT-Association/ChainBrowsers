@@ -1,7 +1,17 @@
 # Hodos spv mode: an Arcade outage makes the wallet fail its own mined transactions
 
-Found 2026-10-06 on `arcade-provider` (`3c35cc33`) with a regtest test wallet. **Not fixed.** It is a
-change to money-path logic, so it needs the owner's go-ahead (Hodos invariant 13).
+Found 2026-10-06 on `arcade-provider` (`3c35cc33`) with a regtest test wallet.
+
+**Fixed 2026-10-10 (owner's go-ahead: spv mode only).**
+- **Defect A:** `monitor/task_check_for_proofs.rs :: timeout_action` decides the final check. In spv
+  mode an inconclusive Arcade answer (outage, 5xx) past the timeout is retried next tick, never failed.
+  A 404 or REJECTED still fails, and so does a tx still only in the mempool past the timeout. Public
+  mode is unchanged. The unit test `past_the_timeout_an_unreachable_arcade_is_retried_in_spv_mode_never_failed`
+  goes red when the spv branch fails the tx again.
+- **Defect B (recovery rejected valid proofs):** fixed by Hodos `b162962d`. The wallet took the wrong
+  leaf of a BUMP whose sibling was also its own transaction, which Arcade flags as a client txid too.
+  That computed a wrong root, so every proof check refused it, unfail included. It could not be replayed
+  on this wallet, because that chain was reset; a regression test with a real Arcade BUMP holds it.
 
 ## What happens
 
