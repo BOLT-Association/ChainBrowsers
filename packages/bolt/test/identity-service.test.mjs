@@ -5,7 +5,7 @@ import assert from 'node:assert/strict'
 import { PrivateKey, ProtoWallet, Script, Transaction } from '@bsv/sdk'
 import { BoltHandler, brc100Core, encodeAuthData, verifyIdentity } from '../src/index.js'
 import { identityService } from '../src/identity-service.js'
-import { pretendChain } from './harness.mjs'
+import { appFunderOn, pretendChain } from './harness.mjs'
 
 const json = (x) => JSON.parse(JSON.stringify(x))
 
@@ -52,7 +52,8 @@ test('identityService: creates, links and presents an identity through the walle
   const app = PrivateKey.fromRandom().toPublicKey().toString()
   const created = await ids.create()
   const data = encodeAuthData({ purpose: 'register', appPubKey: app, challengeHash: 'cd'.repeat(32), count: 1 })
-  const { package: pkg } = await ids.present({ id: created.id, domain: 'peerloop.example', appPubKey: app, data, keepSignedIn: true })
+  const { funder } = appFunderOn(chain)
+  const { package: pkg, id: movedId } = await ids.present({ id: created.id, domain: 'peerloop.example', appPubKey: app, data, keepSignedIn: true, funder })
 
   const site = new BoltHandler({ core: brc100Core({ wallet: { getHeaderForHeight: async ({ height }) => ({ header: chain.headers.get(height) }) }, broadcast: chain.broadcast }) })
   const r = await verifyIdentity({ handler: site, package: pkg, appPubKey: app, data })
@@ -60,7 +61,8 @@ test('identityService: creates, links and presents an identity through the walle
   assert.equal(r.issuer, created.issuer)
 
   // The link and the keep-signed-in choice live in the wallet's own table, under attributes.wallet.
-  const stored = JSON.parse(rails.rows.get(created.id).attributes).wallet
+  const stored = JSON.parse(rails.rows.get(movedId).attributes).wallet
+  assert.equal(stored.holderCount, 1, 'the token moved to holder 1 at registration')
   assert.deepEqual(stored.apps.map((a) => [a.domain, a.appPubKey, a.keepSignedIn]), [['peerloop.example', app, true]])
   assert.deepEqual([...new Set(rails.asked)].sort(), ['/boltBroadcast', '/boltTokens', '/createAction', '/createSignature', '/getPublicKey'])
   // Keys are asked under the identity protocol, never the page's BOLT protocol.

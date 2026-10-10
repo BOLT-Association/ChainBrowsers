@@ -1,36 +1,36 @@
 // AuthBOLT identities: the wallet side and the relying party's check.
 //
 // A user is the issuer of their own AuthBOLTs and an app is a verifier. Each identity is one AuthBOLT
-// minted under its own key (BRC-43 protocol IDENTITY_PROTOCOL, a keyID kept with the token), so two
-// identities share nothing an app could link. The token only ever moves to its holder's own new key
-// (`rotate`): the holder pubKeyHash may change, the issuer key never does, and the issuer key is what
-// an app records as the account.
+// minted under its own key (BRC-43 protocol IDENTITY_PROTOCOL, counted keyIDs `authbolt-<i>`), so two
+// identities share nothing an app could link. The issuer key never changes and is what an app records
+// as the account; the token moves only to the identity's own holder keys (`authbolt-<i>.holder.<n>`),
+// on chain (docs/authbolt-onchain-holder-keys.md):
+//   - register: the issuer key moves the token from its mint to holder 1, in a commit carrying the
+//     app's register data and a settle, both paid by the app and broadcast;
+//   - rotate: when the app asks, the current holder moves it to holder n+1 the same way;
+//   - reissue: a lost holder key leaves its token dead, so the issuer key mints a new token for the
+//     same identity and moves it to holder n+1.
+// The app pays each commit and settle with one coin of exactly what it needs, signed SIGHASH_SINGLE |
+// ANYONECANPAY (`funder`), so neither side can divert anything. The count n travels in the auth data,
+// and the wallet and the app keep it in step.
 //
-// The wallet presents an identity only with AUTH DATA that names the app asking (66 bytes):
-//   [tag 1][app public key 33][challenge hash 32]
-// tag 0x01 register, 0x02 sign in, 0x03 keep a session alive, 0x04 a write (one change a person makes in the
-// app, signed: the hash is the write's own). The app's server makes the data from
-// its own challenge; the wallet reads the tag and the app key to word its prompt, and refuses data
-// that names another app. A presentation is a self-transfer: the settle pays the holder's own key,
-// and the app key is bound by the auth data the commit carries and the settle covers. So it is no use
-// to any other verifier (the data names this app and this challenge), and it never hands the token
-// to the app.
+// AUTH DATA names the app asking (66 bytes; 70 with the count):
+//   [tag 1][app public key 33][challenge hash 32] + [holder count 4] for register, rotate, reissue
+// tag 0x01 register, 0x02 sign in, 0x03 keep a session alive, 0x04 a write (one change a person makes in
+// the app, signed: the hash is the write's own), 0x05 rotate, 0x06 reissue. The app's server makes the
+// data from its own challenge; the wallet reads the tag and the app key to word its prompt, and
+// refuses data that names another app.
 //
 // What the wallet remembers about an identity lives in the token row's attributes, under `wallet`:
-//   { issuerKeyId, holderKeyId, apps: [{ domain, appPubKey, keepSignedIn, linkedAt, signKeyId, signSeq, pending }] }
-// `keepSignedIn` is the user's grant for silent keep-alive presentations to that app on that site.
+//   { issuerKeyId, holderKeyId, holderCount, apps: [{ domain, appPubKey, keepSignedIn, linkedAt }] }
+// `keepSignedIn` is the user's grant for silent signatures and rotations for that app on that site.
 //
-// Holder-key signatures (PeerLoop's V1 plan). A presentation proves ownership only when its commit
-// spends the token's own mint, which needs the issuer key (b017's genesis guard), so an app takes a
-// presentation only to register, and records the key the identity signs with afterwards: at first
-// the issuer key, then a per-app signing key (`signKeyId`) the wallet rotates to so the issuer key can
-// stay offline. Sign-in, keep-alives and writes are that key's signatures over
+// After registering, sign-in, keep-alives and writes are holder-key signatures over
 //   sha256("PeerLoop/1\n" ‖ kind ‖ "\n" ‖ app key (33 bytes) ‖ sha256(payload))
-// which the wallet builds itself (signDigest) and never takes from a page. A rotation is signed by the
-// current signing key, a recovery by the issuer key; `signSeq` counts them, as the app does.
+// which the wallet builds itself (signDigest) and never takes from a page.
 //
 // Imports nothing from Node, so it bundles for the browser's trusted UI.
-import { Hash, P2PKH, Random, Transaction, Utils } from '@bsv/sdk'
+import { Hash, P2PKH, PrivateKey, Transaction, Utils } from '@bsv/sdk'
 import { fromBeef, toAtomicBeef } from 'b017'
 import { buildCommit, buildMint, buildSettle, readToken } from './nft.js'
 import { lowSDer, signWith, sizeOf } from './signer.js'
@@ -45,8 +45,6 @@ export const COUNTED_AUTH_DATA_BYTES = 70
 const PURPOSES = { register: 1, signin: 2, refresh: 3, write: 4, rotate: 5, reissue: 6 }
 const COUNTED = ['register', 'rotate', 'reissue']
 const MAX_COUNT = 0xffffffff
-/** The purposes a wallet presents without asking, under the person's keep-signed-in grant. */
-const SILENT = ['refresh', 'write']
 const PURPOSE_OF = Object.fromEntries(Object.entries(PURPOSES).map(([k, v]) => [v, k]))
 
 const hex = (bytes) => Utils.toHex(bytes)
@@ -126,20 +124,40 @@ function needsPrompt (why) {
   return Object.assign(new Error(why), { code: 'NEEDS_PROMPT' })
 }
 
+/** The app pays for every move of an identity token (registration, rotation, reissue). */
+function checkFunder (funder) {
+  if (typeof funder !== 'function') throw new Error('nobody to pay for moving the identity token: the app funds it (funder)')
+}
+
+/**
+ * Ask the app for one coin of exactly `amount` sat, signed for the funding input of `draft` (the
+ * transaction as built, outputs final, at the index its funding input will take).
+ */
+async function askFunder (funder, step, draft, amount) {
+  if (!Number.isInteger(amount) || amount < 1) throw new Error(`the ${step} needs a funding coin of at least 1 sat, not ${amount}`)
+  const coin = await funder({ step, amount, tx: draft, index: draft.inputs.length })
+  const sats = coin?.tx?.outputs?.[coin.vout]?.satoshis
+  if (sats !== amount || !coin.unlockingScript) throw new Error(`the app's coin for the ${step} must be exactly ${amount} sat and signed`)
+  return coin
+}
+
 /** A stand-in funding output of the right shape, to measure a transaction before funding it. */
 const sizingFund = (pkh) => ({ tx: new Transaction(1, [], [{ satoshis: 1e8, lockingScript: p2pkh.lock(pkh) }], 0), vout: 0 })
+
+/** Holder key n of an identity: an ordinary wallet key, counted, so a seed and the count find it again. */
+const holderKeyIdOf = (issuerKeyId, n) => `${issuerKeyId}.holder.${n}`
+/** A key for transactions that are built only to be measured or shown to the payer, never signed. */
+const draftKey = PrivateKey.fromRandom()
 
 export class IdentityWallet {
   /**
    * @param core       a wallet core whose keys are derived under IDENTITY_PROTOCOL (brc100Core with
    *                   `protocolID: IDENTITY_PROTOCOL`); its store must have `annotate` or `get`+`put`
-   * @param feePerKb   satoshis per 1000 bytes for the funded transactions (mint, rotate)
-   * @param newKeyId   a fresh keyID for each identity key
+   * @param feePerKb   satoshis per 1000 bytes for the funded transactions (mint, commit, settle)
    */
-  constructor ({ core, feePerKb = 100, newKeyId = () => `authbolt-${hex(Random(16))}` }) {
+  constructor ({ core, feePerKb = 100 }) {
     this.core = core
     this.feePerKb = feePerKb
-    this.newKeyId = newKeyId
   }
 
   /** Every identity this wallet holds, with the apps it is linked to. */
@@ -155,65 +173,78 @@ export class IdentityWallet {
     return (await this.identities()).filter((t) => t.apps.some((a) => a.domain === domain && a.appPubKey === key))
   }
 
-  /** Mint a new identity under a new key. Funded exactly, so its change is 1 sat. */
+  /** Mint a new identity under the next counted key (`authbolt-<i>`), paid by this wallet. */
   async create () {
-    const keyId = this.newKeyId()
-    const issuerPubKey = await this.core.publicKey(keyId)
-    const issuerPkh = Hash.hash160(issuerPubKey)
-    const fee = await this.#fee(keyId, (key) => buildMint({ type: 'AuthBOLT', key, issuerPubKey, issuerPkh, fund: sizingFund(issuerPkh), fee: 0 }))
-    const fund = await this.core.fund(p2pkh.lock(issuerPkh), 1 + fee + 1)
-    const tx = await signWith(this.core, keyId, (key) => buildMint({ type: 'AuthBOLT', key, issuerPubKey, issuerPkh, fund, fee }))
-    await this.#send(tx, 'mint')
-    const record = await this.#keep(tx, 0, 'mint', { issuerKeyId: keyId, holderKeyId: keyId, apps: [] })
+    const keyId = await this.#nextIdentityKeyId()
+    const tx = await this.#mint(keyId)
+    const record = await this.#keep(tx, 0, 'mint', { issuerKeyId: keyId, holderKeyId: keyId, holderCount: 0, apps: [] })
     return this.#view(record)
   }
 
   /**
-   * Present identity `id` to an app: the data must name that app. Links the identity to the app on
-   * this site, and records the user's keep-signed-in choice when one is given. Nothing is broadcast.
-   * @returns `{ package, id }` for the app's server
+   * Register identity `id` with an app: the issuer key moves the token from its mint to holder key 1
+   * (the count the register data names) in a commit carrying the data and a settle, both paid by the
+   * app (`funder`) and broadcast before this returns. Links the identity to the app on this site and
+   * records the keep-signed-in choice. Sign-in and keep-alives are signatures (`sign`), never this.
+   * @param funder  `({ step, amount, tx, index }) => { tx, vout, unlockingScript }`: the app's coin of
+   *                exactly `amount` sat, signed for input `index` of `tx` (SIGHASH_SINGLE | ANYONECANPAY)
+   * @returns `{ package, id }`: the commit and settle for the app's server, and the identity's new id
    */
-  async present ({ id, domain, appPubKey, data, keepSignedIn }) {
-    const app = checkAppKey(appPubKey)
-    const decoded = decodeAuthData(data)
-    if (decoded.purpose === 'write') throw new Error('a write is only ever signed silently, under the keep-signed-in grant')
-    if (decoded.appPubKey !== app) throw new Error('the auth data names another app than the one asking')
+  async present ({ id, domain, appPubKey, data, keepSignedIn, funder }) {
+    const { app, decoded } = this.#readFor(appPubKey, data, 'register', 'a presentation is only ever a registration: signing in and keep-alives are signatures')
     if (typeof domain !== 'string' || !domain) throw new Error('a presentation needs the site it is for')
     const record = await this.#record(id)
-    if (decoded.purpose === 'register' && !(await this.#token(record)).isMint) {
-      throw new Error('this identity\'s token has moved since its mint, so it proves no ownership: it cannot register')
-    }
-    const pkg = await this.#presentation(record, app, data)
+    const token = await this.#token(record)
+    if (!token.isMint) throw new Error('this identity\'s token has moved since its mint, so it proves no ownership: it cannot register')
+    this.#checkCount(record, decoded.count)
+    checkFunder(funder)
     await this.#link(record, { domain, appPubKey: app, keepSignedIn })
-    return { package: pkg, id }
+    return this.#move(await this.#record(id), { token, n: decoded.count, data, funder })
   }
 
   /**
-   * A presentation without asking: only keep-alive or write data, only to an app on a site the user
-   * chose to stay signed in to. Anything else throws NEEDS_PROMPT (or a plain error for wrong data).
+   * The app asked for a rotation: move the token from the current holder key to the next one (the
+   * count the rotate data names), paid by the app and broadcast. Silent only under the keep-signed-in
+   * grant for that app on that site; behind the prompt the person chose identity `id`.
+   * @returns `{ package, id }`
    */
-  async refresh ({ domain, appPubKey, data }) {
-    const app = checkAppKey(appPubKey)
-    const decoded = decodeAuthData(data)
-    if (!SILENT.includes(decoded.purpose)) throw new Error('only keep-alive or write data can be presented without asking')
-    if (decoded.appPubKey !== app) throw new Error('the auth data names another app than the one asking')
-    const linked = (await this.forApp({ domain, appPubKey: app }))
-      .find((t) => t.apps.some((a) => a.domain === domain && a.appPubKey === app && a.keepSignedIn))
-    if (!linked) throw needsPrompt('the user has not chosen to stay signed in to this app')
-    const record = await this.#record(linked.id)
-    return { package: await this.#presentation(record, app, data), id: linked.id }
+  async rotate ({ id, domain, appPubKey, data, funder, silent }) {
+    const { app, decoded } = this.#readFor(appPubKey, data, 'rotate', 'only rotate data moves the token to the next holder')
+    const record = await this.#chosen({ id, domain, appPubKey: app, silent })
+    this.#checkCount(record, decoded.count)
+    checkFunder(funder)
+    return this.#move(record, { token: await this.#token(record), n: decoded.count, data, funder })
   }
 
   /**
-   * Sign `payload` as `kind` for an app with the identity's signing key (holder key). Silent (no
-   * prompt shown) only under the keep-signed-in grant for that app on that site, and only for
-   * sign-in, keep-alive and the writes the app's published tiers call silent; anything else throws
-   * NEEDS_PROMPT. Behind the wallet's prompt (`silent` false) the person chose the identity `id`.
-   * @returns `{ identity, holder, signature }`: the issuer key, the signing key and DER hex
+   * Recover from a lost holder key. The token held by that key can never move again, so the
+   * identity's issuer key mints a new one (the same issuer: the same identity to every app) and
+   * moves it to the next holder (the count the reissue data names); the old record goes. Never silent.
+   * @returns `{ package, id }`: the new mint travels inside the commit
+   */
+  async reissue ({ id, domain, appPubKey, data, funder, silent }) {
+    if (silent) throw needsPrompt('the wallet always asks before reissuing an identity')
+    const { app, decoded } = this.#readFor(appPubKey, data, 'reissue', 'only reissue data recovers an identity')
+    const old = await this.#chosen({ id, domain, appPubKey: app, silent: false })
+    this.#checkCount(old, decoded.count)
+    checkFunder(funder)
+    const wallet = old.attributes.wallet
+    const mint = await this.#mint(wallet.issuerKeyId)
+    const fresh = await this.#keep(mint, 0, 'mint', { ...wallet, holderKeyId: wallet.issuerKeyId })
+    await this.core.store.delete(old.id)
+    return this.#move(fresh, { token: await this.#token(fresh), n: decoded.count, data, funder })
+  }
+
+  /**
+   * Sign `payload` as `kind` for an app with the identity's holder key. Silent (no prompt shown) only
+   * under the keep-signed-in grant for that app on that site, and only for sign-in, keep-alive and
+   * the writes the app's published tiers call silent; anything else throws NEEDS_PROMPT. Behind the
+   * wallet's prompt (`silent` false) the person chose the identity `id`.
+   * @returns `{ identity, holder, signature }`: the issuer key, the holder key and DER hex
    */
   async sign ({ id, domain, appPubKey, kind, payload, silent }) {
     const app = checkAppKey(appPubKey)
-    if (!['signin', 'refresh', 'write'].includes(kind)) throw new Error(`a page may ask to sign signin, refresh or write, not ${kind}: rotate and recover are the wallet's own`)
+    if (!['signin', 'refresh', 'write'].includes(kind)) throw new Error(`a page may ask to sign signin, refresh or write, not ${kind}`)
     if (typeof payload !== 'string' || payload.length > MAX_PAYLOAD) throw new Error('the payload must be text of at most 64 KiB')
     const tier = kind === 'write' ? tierOfWrite(payload) : 'silent'
     if (silent && tier !== 'silent') {
@@ -221,88 +252,24 @@ export class IdentityWallet {
       throw needsPrompt('the wallet always asks before signing this change')
     }
     const record = await this.#chosen({ id, domain, appPubKey: app, silent })
-    const entry = this.#app(record, domain, app)
-    const keyId = entry.signKeyId ?? record.attributes.wallet.issuerKeyId
-    return { identity: record.issuer, ...(await this.#signAs(keyId, { kind, appPubKey: app, payload })) }
-  }
-
-  /**
-   * Move an identity's signing key for one app to a new key: the current signing key signs
-   * `{"issuer","newHolder","seq"}`. The new key is used once the app accepted it (confirmHolder).
-   * @returns `{ issuer, newHolder, seq, signature }` for the app's rotate request
-   */
-  async rotateHolder ({ id, domain, appPubKey }) {
-    const app = checkAppKey(appPubKey)
-    const record = await this.#record(id)
-    const entry = this.#app(record, domain, app)
-    const keyId = this.newKeyId()
-    const newHolder = hex(await this.core.publicKey(keyId))
-    const seq = (entry.signSeq ?? 0) + 1
-    const payload = `{"issuer":"${record.issuer}","newHolder":"${newHolder}","seq":${seq}}`
-    const { signature } = await this.#signAs(entry.signKeyId ?? record.attributes.wallet.issuerKeyId, { kind: 'rotate', appPubKey: app, payload })
-    await this.#setApp(record, domain, app, { pending: { keyId, seq } })
-    return { issuer: record.issuer, newHolder, seq, signature }
-  }
-
-  /**
-   * Rebind an identity for one app to a new signing key with the issuer key, over the app's fresh
-   * challenge: `{"issuer","newHolder","seq","challenge"}`. For a lost signing key; `seq` defaults
-   * to one past the wallet's count. Takes effect with confirmHolder.
-   */
-  async recoverHolder ({ id, domain, appPubKey, challenge, seq }) {
-    const app = checkAppKey(appPubKey)
-    if (typeof challenge !== 'string' || !/^[0-9a-f]{2,264}$/i.test(challenge)) throw new Error('a recovery signs the app\'s challenge (hex)')
-    const record = await this.#record(id)
-    const entry = this.#app(record, domain, app)
-    const keyId = this.newKeyId()
-    const newHolder = hex(await this.core.publicKey(keyId))
-    const n = seq ?? (entry.signSeq ?? 0) + 1
-    if (!Number.isSafeInteger(n) || n < 1) throw new Error('seq counts up from 1')
-    const payload = `{"issuer":"${record.issuer}","newHolder":"${newHolder}","seq":${n},"challenge":"${challenge}"}`
-    const { signature } = await this.#signAs(record.attributes.wallet.issuerKeyId, { kind: 'recover', appPubKey: app, payload })
-    await this.#setApp(record, domain, app, { pending: { keyId, seq: n } })
-    return { issuer: record.issuer, newHolder, seq: n, signature }
-  }
-
-  /** The app accepted the last rotation or recovery: sign with the new key from now on. */
-  async confirmHolder ({ id, domain, appPubKey }) {
-    const app = checkAppKey(appPubKey)
-    const record = await this.#record(id)
-    const { pending } = this.#app(record, domain, app)
-    if (!pending) throw new Error('no rotation is waiting for this app')
-    await this.#setApp(record, domain, app, { signKeyId: pending.keyId, signSeq: pending.seq, pending: undefined })
+    return { identity: record.issuer, ...(await this.#signAs(record.attributes.wallet.holderKeyId, { kind, appPubKey: app, payload })) }
   }
 
   /**
    * Answer a page's request (Hodos POST /bolt/sign) by kind: signin, refresh and write are
-   * signatures (sign); rotate prepares a move of the app's signing key and confirm makes it take
-   * effect, silently only under the keep-signed-in grant; recover uses the issuer key and is never
-   * silent. The page learns the signature and public keys, never anything else.
+   * signatures (sign); rotate and reissue move the token on chain (the payload is the app's auth
+   * data, `funder` the app's coins). The page learns signatures, public keys and the package.
    */
-  async answer ({ id, domain, appPubKey, kind, payload, silent, seq }) {
-    const app = checkAppKey(appPubKey)
+  async answer ({ id, domain, appPubKey, kind, payload, silent, funder }) {
     switch (kind) {
       case 'signin': case 'refresh': case 'write':
-        return this.sign({ id, domain, appPubKey: app, kind, payload, silent })
-      case 'rotate': {
-        const record = await this.#chosen({ id, domain, appPubKey: app, silent })
-        const r = await this.rotateHolder({ id: record.id, domain, appPubKey: app })
-        return { identity: r.issuer, newHolder: r.newHolder, seq: r.seq, signature: r.signature }
-      }
-      case 'confirm': {
-        const record = await this.#chosen({ id, domain, appPubKey: app, silent })
-        await this.confirmHolder({ id: record.id, domain, appPubKey: app })
-        const entry = this.#app(await this.#record(record.id), domain, app)
-        return { identity: record.issuer, holder: hex(await this.core.publicKey(entry.signKeyId)), seq: entry.signSeq }
-      }
-      case 'recover': {
-        if (silent) throw needsPrompt('the wallet always asks before a recovery')
-        const record = await this.#chosen({ id, domain, appPubKey: app, silent })
-        const r = await this.recoverHolder({ id: record.id, domain, appPubKey: app, challenge: payload, seq })
-        return { identity: r.issuer, newHolder: r.newHolder, seq: r.seq, signature: r.signature }
-      }
+        return this.sign({ id, domain, appPubKey, kind, payload, silent })
+      case 'rotate':
+        return this.rotate({ id, domain, appPubKey, data: payload, funder, silent })
+      case 'reissue':
+        return this.reissue({ id, domain, appPubKey, data: payload, funder, silent })
       default:
-        throw new Error(`unknown kind ${kind}: signin, refresh, write, rotate, confirm or recover`)
+        throw new Error(`unknown kind ${kind}: signin, refresh, write, rotate or reissue`)
     }
   }
 
@@ -320,36 +287,84 @@ export class IdentityWallet {
     await this.#annotate(record, { ...wallet, apps: wallet.apps.filter((a) => !(a.domain === domain && a.appPubKey === app)) })
   }
 
-  /** Move the identity to a new holder key of this wallet (a funded commit and settle, broadcast).
-   *  The issuer key, and so the identity apps know, stays. */
-  async rotate (id) {
+  /**
+   * The V1 shape: an unfunded self-transfer carrying `data`, which can never be broadcast. Nothing in
+   * the wallet uses it any more; verifiers keep it to show they refuse a registration that is not on chain.
+   */
+  async presentOffChain ({ id, appPubKey, data }) {
+    checkAppKey(appPubKey)
     const record = await this.#record(id)
-    const wallet = record.attributes.wallet
     const token = await this.#token(record)
-    const holderKeyId = this.newKeyId()
-    const toPkh = Hash.hash160(await this.core.publicKey(holderKeyId))
-    const from = wallet.holderKeyId
-
-    // Measure both with stand-in funding, then fund the commit with exactly what both need: the
-    // commit's change funds the settle, and the settle's change is 1 sat.
-    const fake = sizingFund(token.owner)
-    const commitFee = await this.#fee(from, (key) => buildCommit({ token, key, toPkh, fund: fake, fee: 0 }))
-    const fakeCommit = await signWith(this.core, from, (key) => buildCommit({ token, key, toPkh, fund: fake, fee: commitFee }))
-    const settleFee = await this.#fee(from, (key) => buildSettle({ token, commit: fakeCommit, key, toPkh, fund: { tx: fakeCommit, vout: fakeCommit.outputs.length - 1 }, fee: 0 }))
-    const proofInput = token.isMint ? 0 : 1
-    const fund = await this.core.fund(p2pkh.lock(token.owner), 1 + commitFee + (1 + settleFee - proofInput))
-
-    const commit = await signWith(this.core, from, (key) => buildCommit({ token, key, toPkh, fund, fee: commitFee }))
-    const change = { tx: commit, vout: commit.outputs.length - 1 }
-    const settle = await signWith(this.core, from, (key) => buildSettle({ token, commit, key, toPkh, fund: change, fee: settleFee }))
-    await this.#send(commit, 'commit')
-    await this.#send(settle, 'settle')
-    const moved = await this.#keep(settle, 0, 'settle', { ...wallet, holderKeyId })
-    await this.core.store.delete(id)
-    return this.#view(moved)
+    const keyId = record.attributes.wallet.holderKeyId
+    const auth = bytesOf(data)
+    const commit = await signWith(this.core, keyId, (key) => buildCommit({ token, key, toPkh: token.owner, auth }))
+    const settle = await signWith(this.core, keyId, (key) => buildSettle({ token, commit, key, toPkh: token.owner }))
+    return [commit, settle].map((tx) => hex(toAtomicBeef(tx)))
   }
 
   // ---- inside ----------------------------------------------------------------------
+
+  /** Decode `data`, which must name this app and be for `purpose`. */
+  #readFor (appPubKey, data, purpose, wrongPurpose) {
+    const app = checkAppKey(appPubKey)
+    const decoded = decodeAuthData(data)
+    if (decoded.appPubKey !== app) throw new Error('the auth data names another app than the one asking')
+    if (decoded.purpose !== purpose) throw new Error(`${wrongPurpose} (this is ${decoded.purpose} data)`)
+    return { app, decoded }
+  }
+
+  /** The app's count must be this identity's next holder: the wallet and the app keep it in step. */
+  #checkCount (record, count) {
+    const next = (record.attributes.wallet.holderCount ?? 0) + 1
+    if (count !== next) throw new Error(`the app asks for holder ${count}, but this identity's next holder is ${next}: the counts are out of step`)
+  }
+
+  /** The next counted identity key: one past the highest `authbolt-<i>` this wallet has used. */
+  async #nextIdentityKeyId () {
+    const records = await this.core.store.list({ type: 'AuthBOLT' })
+    const used = records.map((r) => /^authbolt-(\d+)$/.exec(r.attributes?.wallet?.issuerKeyId ?? '')).filter(Boolean).map((m) => Number(m[1]))
+    return `authbolt-${used.length ? Math.max(...used) + 1 : 0}`
+  }
+
+  /** Mint an AuthBOLT under `keyId`, paid by this wallet exactly (its change is 1 sat), broadcast. */
+  async #mint (keyId) {
+    const issuerPubKey = await this.core.publicKey(keyId)
+    const issuerPkh = Hash.hash160(issuerPubKey)
+    const fee = await this.#fee(keyId, (key) => buildMint({ type: 'AuthBOLT', key, issuerPubKey, issuerPkh, fund: sizingFund(issuerPkh), fee: 0 }))
+    const fund = await this.core.fund(p2pkh.lock(issuerPkh), 1 + fee + 1)
+    const tx = await signWith(this.core, keyId, (key) => buildMint({ type: 'AuthBOLT', key, issuerPubKey, issuerPkh, fund, fee }))
+    await this.#send(tx, 'mint')
+    return tx
+  }
+
+  /**
+   * Move `record`'s token from its holder key to holder `n`: a commit carrying `data` and a settle,
+   * each paid by one coin of the app's of exactly what it needs (no change), broadcast. The wallet's
+   * record follows the token.
+   */
+  async #move (record, { token, n, data, funder }) {
+    const wallet = record.attributes.wallet
+    const from = wallet.holderKeyId
+    const holderKeyId = holderKeyIdOf(wallet.issuerKeyId, n)
+    const toPkh = Hash.hash160(await this.core.publicKey(holderKeyId))
+    const auth = bytesOf(data)
+    const measure = sizingFund(token.owner)
+
+    const commitFee = await this.#fee(from, (key) => buildCommit({ token, key, toPkh, auth, fund: measure, fee: 0 }))
+    const commitFund = await askFunder(funder, 'commit', buildCommit({ token, key: draftKey, toPkh, auth }), 1 + commitFee)
+    const commit = await signWith(this.core, from, (key) => buildCommit({ token, key, toPkh, auth, fund: commitFund, fee: commitFee }))
+
+    const settleFee = await this.#fee(from, (key) => buildSettle({ token, commit, key, toPkh, fund: measure, fee: 0 }))
+    const proofInput = token.isMint ? 0 : 1 // a settle after an earlier commit also spends its 1-sat proof
+    const settleFund = await askFunder(funder, 'settle', buildSettle({ token, commit, key: draftKey, toPkh }), settleFee - proofInput)
+    const settle = await signWith(this.core, from, (key) => buildSettle({ token, commit, key, toPkh, fund: settleFund, fee: settleFee }))
+
+    await this.#send(commit, 'commit')
+    await this.#send(settle, 'settle')
+    const moved = await this.#keep(settle, 0, 'settle', { ...wallet, holderKeyId, holderCount: n })
+    await this.core.store.delete(record.id)
+    return { package: [commit, settle].map((tx) => hex(toAtomicBeef(tx))), id: moved.id }
+  }
 
   /** The identity a request is for: the one the person chose in the prompt (linked to the app
    *  here), or, silently, the one linked to the app with the keep-signed-in grant (else NEEDS_PROMPT). */
@@ -367,24 +382,6 @@ export class IdentityWallet {
     return this.#record(id)
   }
 
-  /** The identity's link to an app on a site; throws when there is none. */
-  #app (record, domain, appPubKey) {
-    const entry = (record.attributes.wallet.apps ?? []).find((a) => a.domain === domain && a.appPubKey === appPubKey)
-    if (!entry) throw new Error('this identity is not linked to that app on that site')
-    return entry
-  }
-
-  async #setApp (record, domain, appPubKey, change) {
-    const wallet = record.attributes.wallet
-    const apps = (wallet.apps ?? []).map((a) => {
-      if (a.domain !== domain || a.appPubKey !== appPubKey) return a
-      const next = { ...a, ...change }
-      for (const k of Object.keys(next)) if (next[k] === undefined) delete next[k]
-      return next
-    })
-    await this.#annotate(record, { ...wallet, apps })
-  }
-
   async #signAs (keyId, { kind, appPubKey, payload }) {
     const digest = signDigest({ kind, appPubKey, payload })
     const der = lowSDer(await this.core.signDigest(keyId, digest))
@@ -393,7 +390,7 @@ export class IdentityWallet {
 
   #view (record) {
     const w = record.attributes.wallet
-    return { id: record.id, type: record.type, issuer: record.issuer, keyId: w.issuerKeyId, holderKeyId: w.holderKeyId, apps: w.apps ?? [] }
+    return { id: record.id, type: record.type, issuer: record.issuer, keyId: w.issuerKeyId, holderKeyId: w.holderKeyId, holderCount: w.holderCount ?? 0, apps: w.apps ?? [] }
   }
 
   async #record (id) {
@@ -407,16 +404,6 @@ export class IdentityWallet {
     const holder = Hash.hash160(await this.core.publicKey(record.attributes.wallet.holderKeyId))
     if (hex(token.owner) !== hex(holder)) throw new Error(`identity ${record.id} is not held by its recorded key`)
     return token
-  }
-
-  async #presentation (record, app, data) {
-    const token = await this.#token(record)
-    const keyId = record.attributes.wallet.holderKeyId
-    const toPkh = token.owner // a self-transfer; the app is named in the auth data
-    const auth = bytesOf(data)
-    const commit = await signWith(this.core, keyId, (key) => buildCommit({ token, key, toPkh, auth }))
-    const settle = await signWith(this.core, keyId, (key) => buildSettle({ token, commit, key, toPkh }))
-    return [commit, settle].map((tx) => hex(toAtomicBeef(tx)))
   }
 
   async #link (record, { domain, appPubKey, keepSignedIn }) {
@@ -470,12 +457,17 @@ export class IdentityWallet {
 }
 
 /**
- * The relying party's check of an identity presentation. Users are the issuers, so the issuer is
- * read from the package; the app compares it with the account it has on record.
- * @param handler    a BoltHandler (its core's broadcaster and headers judge the anchor)
- * @param appPubKey  this app's key: the data must name it (the presentation is a self-transfer)
+ * The relying party's check of a registration (or a reissue, which registers a new token for the same
+ * identity). Users are the issuers, so the issuer is read from the package; the app compares it with
+ * the account it has on record. The package must move the token on chain: a commit carrying this
+ * app's data that spends the token's own mint (so only the issuer key could sign it), then a settle
+ * to the identity's next holder, both funded and accepted by the network (re-sent here; "seen" is
+ * enough: it will be mined).
+ * @param handler    a BoltHandler (its core's broadcaster and headers judge the package)
+ * @param appPubKey  this app's key: the data must name it
  * @param data       the auth data this app issued for this challenge (hex)
- * @returns `{ ok, reason? }`, and when ok `{ issuer, holder, tokenId, purpose, anchors }`
+ * @returns `{ ok, reason? }`, and when ok `{ issuer, holder, count, tokenId, purpose, anchors, mintTxid }`:
+ *          `holder` is the new holder key's hash (its public key comes with its first signature)
  */
 export async function verifyIdentity ({ handler, package: pkg, appPubKey, data }) {
   let decoded, app
@@ -486,6 +478,7 @@ export async function verifyIdentity ({ handler, package: pkg, appPubKey, data }
     return { ok: false, reason: e.message }
   }
   if (decoded.appPubKey !== app) return { ok: false, reason: 'the auth data names another app' }
+  if (!['register', 'reissue'].includes(decoded.purpose)) return { ok: false, reason: `${decoded.purpose} data does not register an identity` }
   let issuer
   try {
     const named = pkg.map((entry) => readToken(fromBeef(entry))).find(Boolean)
@@ -498,13 +491,14 @@ export async function verifyIdentity ({ handler, package: pkg, appPubKey, data }
   if (mint.reason) return { ok: false, reason: mint.reason }
   const r = await handler.verify(pkg, { issuer })
   if (!r.ok) return { ok: false, reason: r.reason }
-  if (r.kind !== 'presentation' || r.type !== 'AuthBOLT') return { ok: false, reason: 'not an AuthBOLT presentation' }
+  if (r.type !== 'AuthBOLT') return { ok: false, reason: 'not an AuthBOLT' }
+  if (r.kind === 'presentation') return { ok: false, reason: 'a registration must be on chain: this move was never funded or broadcast' }
+  if (r.kind !== 'transfer') return { ok: false, reason: 'a registration moves the token once (a commit and a settle)' }
   if (r.data !== data.toLowerCase()) return { ok: false, reason: 'the presentation carries other data than this challenge' }
-  if (r.owner !== r.holder) return { ok: false, reason: 'a presentation must be a self-transfer: it moves the token to another key' }
   if (r.issuer !== mint.issuer) return { ok: false, reason: 'the presented token\'s issuer is not its mint\'s' }
   return {
-    ok: true, issuer: r.issuer, holder: r.holder, tokenId: r.tokenId, purpose: decoded.purpose, anchors: r.anchors,
-    mintTxid: mint.txid, holderPubKey: mint.signer
+    ok: true, issuer: r.issuer, holder: r.owner, count: decoded.count, tokenId: r.tokenId, purpose: decoded.purpose,
+    anchors: r.anchors, mintTxid: mint.txid
   }
 }
 

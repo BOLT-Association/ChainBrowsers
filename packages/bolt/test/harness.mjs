@@ -2,7 +2,7 @@
 // (real BRC-100 keys + signatures) behind brc100Core, on a pretend chain that mines funding, serves
 // headers, and runs a broadcaster that refuses what a node would (missing inputs, value creation, bad
 // scripts) and executes every tx on the @bsv/sdk Spend engine.
-import { MerklePath, PrivateKey, ProtoWallet, Script, Transaction, Utils } from '@bsv/sdk'
+import { MerklePath, P2PKH, PrivateKey, ProtoWallet, Script, Transaction, Utils } from '@bsv/sdk'
 import { verifyTx } from 'b017'
 import { BoltHandler, brc100Core, memoryStore } from '../src/index.js'
 
@@ -66,4 +66,25 @@ export function walletOn (chain, { store = memoryStore(), ...opts } = {}) {
   const { wallet, calls } = protoWalletOn(chain)
   const handler = new BoltHandler({ core: brc100Core({ wallet, broadcast: chain.broadcast, store }), ...opts })
   return { handler, calls, store }
+}
+
+/**
+ * An app's funding wallet on the pretend chain: for each transaction it is asked to fund, a coin of
+ * exactly the amount asked, signed SIGHASH_SINGLE | ANYONECANPAY with the app's own key over the
+ * transaction as the wallet built it (only the app's input and the output at its index are covered).
+ */
+export function appFunderOn (chain) {
+  const key = PrivateKey.fromRandom()
+  const lock = new P2PKH().lock(key.toPublicKey().toAddress())
+  const asked = []
+  const funder = async ({ amount, tx, index, step }) => {
+    asked.push({ amount, index, step, outputs: tx.outputs.length })
+    const coin = chain.mine(lock, amount)
+    const copy = new Transaction(tx.version, [], tx.outputs.map((o) => ({ ...o })), tx.lockTime)
+    for (let i = 0; i < index; i++) copy.addInput({ sourceTXID: '00'.repeat(32), sourceOutputIndex: i, sequence: 0xffffffff })
+    copy.addInput({ sourceTransaction: coin, sourceOutputIndex: 0, sequence: 0xffffffff })
+    const unlockingScript = await new P2PKH().unlock(key, 'single', true).sign(copy, index)
+    return { tx: coin, vout: 0, unlockingScript }
+  }
+  return { funder, asked, lock }
 }

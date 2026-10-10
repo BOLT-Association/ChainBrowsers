@@ -15,7 +15,7 @@ import { fileURLToPath } from 'node:url'
 import vm from 'node:vm'
 import { Hash, PrivateKey, ProtoWallet, Script, Transaction, Utils } from '@bsv/sdk'
 import { BoltHandler, IDENTITY_PROTOCOL, IdentityWallet, PAGE_METHODS, brc100Core, encodeAuthData, verifyIdentity, walletBroadcaster, walletStore } from '../src/index.js'
-import { pretendChain } from './harness.mjs'
+import { appFunderOn, pretendChain } from './harness.mjs'
 
 const bundlePath = join(dirname(fileURLToPath(import.meta.url)), '..', 'dist', 'bolt-shim.js')
 const skip = !existsSync(bundlePath) && 'run `npm run bundle` first'
@@ -77,10 +77,10 @@ function fakeWallet (chain) {
     boltBroadcast: broadcast,
     boltTokens: async (a) => tokens(a),
     // The wallet's own identity prompt (Hodos answers /bolt/request natively): here the person
-    // always picks their first identity.
+    // always picks their first identity, and the app pays for the move to holder 1.
     'bolt/request': async ({ appPubKey, data }) => {
       const [first] = await ids.identities()
-      return ids.present({ id: first.id, domain: 'site.example', appPubKey, data })
+      return ids.present({ id: first.id, domain: 'site.example', appPubKey, data, funder: appFunderOn(chain).funder })
     }
   }
   // The wallet's trusted side: identities under their own keys, kept in the same table.
@@ -213,8 +213,8 @@ test('tokens live in the wallet: a reloaded page (a new realm) still holds and c
   // The page cannot present it; it asks the wallet, and an app verifies what comes back.
   assert.equal(reloaded.present, undefined)
   const appPubKey = PrivateKey.fromRandom().toPublicKey().toString()
-  const data = encodeAuthData({ purpose: 'signin', appPubKey, challengeHash: 'ab'.repeat(32) })
-  const { package: pkg } = await reloaded.requestPresentation({ appPubKey, data, purpose: 'signin', silent: false })
+  const data = encodeAuthData({ purpose: 'register', appPubKey, challengeHash: 'ab'.repeat(32), count: 1 })
+  const { package: pkg } = await reloaded.requestPresentation({ appPubKey, data, purpose: 'register', silent: false })
   const site = walletOnSite(chain)
   const shown = await verifyIdentity({ handler: site, package: pkg, appPubKey, data })
   assert.equal(shown.ok, true, shown.reason)

@@ -75,12 +75,20 @@ export function readToken (tx, vout = 0) {
 const input = (sourceTransaction, sourceOutputIndex, unlockingScriptTemplate) =>
   ({ sourceTransaction, sourceOutputIndex, unlockingScriptTemplate, sequence: FINAL })
 
-/** `fund` is `{ tx, vout }`, a P2PKH output the signing key owns; `fee` is taken from its change. */
+/** `fund` is `{ tx, vout }`, a P2PKH output the signing key owns, and `fee` is taken from its change;
+ *  or `{ tx, vout, unlockingScript }`, already signed by whoever pays, of exactly outputs + fee. */
 function addFunding (tx, key, fund, fee, changeTo) {
   if (!fund) return
   const sats = fund.tx.outputs[fund.vout].satoshis
   const spent = tx.outputs.reduce((sum, o) => sum + o.satoshis, 0) - 1 // the token input brings 1 sat
   const change = sats - spent - fee
+  if (fund.unlockingScript) {
+    // Signed already by whoever pays (an app's SIGHASH_SINGLE | ANYONECANPAY input): a coin of exactly
+    // what the transaction needs, and no change, so the signer cannot lose more than that coin.
+    if (change !== 0) throw new Error(`a pre-signed funding coin must be exactly ${spent + fee} sat, not ${sats}`)
+    tx.addInput({ sourceTransaction: fund.tx, sourceOutputIndex: fund.vout, unlockingScript: fund.unlockingScript, sequence: FINAL })
+    return
+  }
   if (change < 1) throw new Error(`funding of ${sats} sat does not cover the outputs and a fee of ${fee} sat`)
   tx.addInput(input(fund.tx, fund.vout, p2pkh.unlock(key)))
   tx.addOutput({ satoshis: change, lockingScript: p2pkh.lock(changeTo) })

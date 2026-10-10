@@ -7,7 +7,7 @@ import { Hash, PrivateKey, Utils } from '@bsv/sdk'
 import { BoltHandler, brc100Core, memoryStore } from '../src/index.js'
 import { IDENTITY_PROTOCOL, IdentityWallet, encodeAuthData } from '../src/identity.js'
 import { createVerifyServer, headersTracker } from '../src/verify-server.js'
-import { pretendChain, protoWalletOn } from './harness.mjs'
+import { appFunderOn, pretendChain, protoWalletOn } from './harness.mjs'
 
 const SECRET = 'test-secret-1234567'
 const challenge = (t) => Utils.toHex(Hash.sha256(Utils.toArray(t, 'utf8')))
@@ -26,7 +26,8 @@ async function setup () {
   const url = await listen(server)
   const app = PrivateKey.fromRandom().toPublicKey().toString()
   const id = await ids.create()
-  return { chain, ids, server, url, app, id }
+  const { funder } = appFunderOn(chain)
+  return { chain, ids, server, url, app, id, funder }
 }
 
 const post = (url, body, { secret = SECRET, raw } = {}) => fetch(`${url}/verify`, {
@@ -35,28 +36,36 @@ const post = (url, body, { secret = SECRET, raw } = {}) => fetch(`${url}/verify`
   body: raw ?? JSON.stringify(body)
 })
 
-test('POST /verify: a good presentation is ok, with the issuer the app records', async () => {
-  const { ids, server, url, app, id } = await setup()
-  const data = encodeAuthData({ purpose: 'register', appPubKey: app, challengeHash: challenge('n1'), count: 1 })
-  const { package: pkg } = await ids.present({ id: id.id, domain: 'peerloop.example', appPubKey: app, data })
-  const res = await post(url, { package: pkg, appPubKey: app, data })
-  assert.equal(res.status, 200)
-  const r = await res.json()
-  assert.equal(r.ok, true, r.reason)
-  assert.equal(r.issuer, id.issuer)
-  assert.equal(r.purpose, 'register')
-  server.close()
+test('POST /verify: a registration (moved on chain to holder 1) is ok, with the issuer, holder and count the app records', async () => {
+  const { ids, server, url, app, id, funder } = await setup()
+  try {
+    const data = encodeAuthData({ purpose: 'register', appPubKey: app, challengeHash: challenge('n1'), count: 1 })
+    const { package: pkg } = await ids.present({ id: id.id, domain: 'peerloop.example', appPubKey: app, data, funder })
+    const res = await post(url, { package: pkg, appPubKey: app, data })
+    assert.equal(res.status, 200)
+    const r = await res.json()
+    assert.equal(r.ok, true, r.reason)
+    assert.equal(r.issuer, id.issuer)
+    assert.equal(r.purpose, 'register')
+    assert.equal(r.count, 1)
+    assert.match(r.holder, /^[0-9a-f]{40}$/)
+  } finally { server.close() }
 })
 
 test('POST /verify: a refusal is an ordinary answer with the reason', async () => {
-  const { ids, server, url, app, id } = await setup()
-  const data = encodeAuthData({ purpose: 'signin', appPubKey: app, challengeHash: challenge('n2') })
-  const { package: pkg } = await ids.present({ id: id.id, domain: 'peerloop.example', appPubKey: app, data })
-  const other = encodeAuthData({ purpose: 'signin', appPubKey: app, challengeHash: challenge('other') })
-  const r = await (await post(url, { package: pkg, appPubKey: app, data: other })).json()
-  assert.equal(r.ok, false)
-  assert.match(r.reason, /other data/)
-  server.close()
+  const { ids, server, url, app, id, funder } = await setup()
+  try {
+    const data = encodeAuthData({ purpose: 'register', appPubKey: app, challengeHash: challenge('n2'), count: 1 })
+    const { package: pkg } = await ids.present({ id: id.id, domain: 'peerloop.example', appPubKey: app, data, funder })
+    const other = encodeAuthData({ purpose: 'register', appPubKey: app, challengeHash: challenge('other'), count: 1 })
+    const r = await (await post(url, { package: pkg, appPubKey: app, data: other })).json()
+    assert.equal(r.ok, false)
+    assert.match(r.reason, /other data/)
+    const signin = encodeAuthData({ purpose: 'signin', appPubKey: app, challengeHash: challenge('s') })
+    const s = await (await post(url, { package: pkg, appPubKey: app, data: signin })).json()
+    assert.equal(s.ok, false)
+    assert.match(s.reason, /register/, 'sign-in data registers nobody')
+  } finally { server.close() }
 })
 
 test('POST /verify: no secret, a wrong secret, a bad body, a big body and other paths are refused', async () => {
@@ -94,17 +103,4 @@ test('headersTracker: asks the app server whether a root is in ITS verified chai
   fake.close()
   // An app server that cannot be reached is not a yes.
   assert.equal(await isValid('aa'.repeat(32), 7), false)
-})
-
-test('POST /verify: a write (tag 04), signed silently, verifies as a write', async () => {
-  const { ids, server, url, app, id } = await setup()
-  const signin = encodeAuthData({ purpose: 'signin', appPubKey: app, challengeHash: challenge('s') })
-  await ids.present({ id: id.id, domain: 'peerloop.example', appPubKey: app, data: signin, keepSignedIn: true })
-  const data = encodeAuthData({ purpose: 'write', appPubKey: app, challengeHash: challenge('{"kind":"message.post"}') })
-  const { package: pkg } = await ids.refresh({ domain: 'peerloop.example', appPubKey: app, data })
-  const r = await (await post(url, { package: pkg, appPubKey: app, data })).json()
-  assert.equal(r.ok, true, r.reason)
-  assert.equal(r.purpose, 'write')
-  assert.equal(r.issuer, id.issuer)
-  server.close()
 })

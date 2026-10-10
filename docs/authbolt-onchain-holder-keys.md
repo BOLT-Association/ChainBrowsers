@@ -188,6 +188,21 @@ Two more answers (user, 2026-10-10):
 2. **packages/bolt:** registration broadcasts the commit and settle to holder *n*, funded by the
    app's signed input; counted identity and holder keyIDs (Q4); on-chain `rotateHolder`; recovery
    by reissuance (Q3); the off-chain rotate, confirm and rebind go. Pretend-chain tests.
+   **Built (2026-10-10):** `IdentityWallet` counts identity keys (`authbolt-<i>`) and holder keys
+   (`authbolt-<i>.holder.<n>`, `holderCount` in the record). `present` is registration only: the
+   issuer key moves the token to holder 1, in a commit and a settle each paid by one app coin of
+   exactly what it needs (`funder({ step, amount, tx, index })` returns a `SIGHASH_SINGLE |
+   ANYONECANPAY` input; `nft.js` takes it with no change), both broadcast. `rotate` (silent under
+   the grant) and `reissue` (never silent; a new mint under the same issuer key, the old record
+   goes) do the same. `sign` uses the current holder key. Gone: `refresh` (silent presentations),
+   `rotateHolder`, `recoverHolder`, `confirmHolder` and the per-app signing keys. `verifyIdentity`
+   (the Node sidecar's check, in this step because the wallet's tests need it) takes register and
+   reissue packages that move the token out of its mint, funded and broadcast; it refuses V1's
+   unfunded shape, and its verdict gives `holder` (the new holder key's hash) and `count` in place
+   of `holderPubKey`. Pretend-chain tests: `test/identity-onchain.test.mjs` (the covenant runs every
+   script, including the app's input); `npm test` 77 pass. Still on the old shapes until their
+   steps: `scripts/record-verify-contract.mjs` (step 3), Hodos's prompt (step 5) and
+   `live/hodos.live.mjs`.
 3. **boltverifyd and the Node sidecar:** the anchor rule (commit and settle seen) and the verdict
    fields; b017-native's `go/authbolt` the same.
 4. **p2pd:** `identities` gains `holder_pkh`, `count` and `outpoint` (a migration); register
