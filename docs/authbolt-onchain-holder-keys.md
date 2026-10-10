@@ -1,4 +1,4 @@
-# AuthBOLT holder keys on chain (plan, 2026-10-10; questions answered, not yet approved to build)
+# AuthBOLT holder keys on chain (plan, 2026-10-10; all questions answered, not yet approved to build)
 
 The V1 design (`authbolt-registration.md`, "After registration: holder-key signatures") keeps an
 identity's holder key **off chain**. It replaces part of that with the model the user set out on
@@ -154,13 +154,22 @@ person cannot divert anything. The app's wallet keeps a stock of fee-sized coins
 time). The alternative, `SIGHASH_ALL | ANYONECANPAY` with change, would make the app build the
 whole output list itself.
 
-Further questions this raises:
+Two more answers (user, 2026-10-10):
 
-- **Q6. Abuse.** Any signed-in person can ask the app for fee coins. What limits it: one coin per
-  registration and rotation, a rate limit per identity?
-- **Q7. Where the app keeps its records.** p2pd records each identity's token outpoint and count
-  (step 4). Should p2pd also answer a restored wallet's "which tokens and counts are mine?"
-  (signed by the issuer key), since Arcade cannot?
+- **Q6. Abuse: limited by who asks.** "Registration is by invite only and happens only once,
+  rotations are requested by the app not the user." So:
+  - the app hands out a funding coin for a registration only against a valid, unused invite, once
+    per invite;
+  - a rotation starts with the **app**: p2pd decides when an identity rotates and sends the page
+    a rotation request carrying the funding input; the wallet rotates silently under the grant.
+    A page cannot ask for a rotation (or a fee coin) by itself.
+  - This conflicts with p2pd's `-open-signup` (added at the user's request the same morning, the
+    demo runs with it): with invite-only registration, open sign-up would apply only to approving
+    an invited registration at once. To confirm when step 4 starts.
+- **Q7. No: "it's a separate wallet".** p2pd keeps no lookup for restored wallets; a person's
+  wallet restores its identities from its own records and backups. And the app's funding wallet
+  is a **separate wallet**, not part of p2pd (my reading of the same answer): p2pd asks it for a
+  signed input, and its key never enters p2pd (which keeps no secrets).
 
 ## Steps (red then green; the gates on every green commit)
 
@@ -175,9 +184,11 @@ Further questions this raises:
    records them; the first signature binds the key; `POST /api/auth/rotate` takes a commit and
    settle; `POST /api/auth/recover` takes a reissued package; the web client drops
    `moveOffIssuerKey`.
-4b. **p2pd's funding wallet:** a key of its own (a secret, kept outside boltverifyd), a stock of
-   fee-sized coins, and an endpoint that hands a signed `SIGHASH_SINGLE | ANYONECANPAY` input to a
-   signed-in page (Q6). It goes through Arcade like everything else.
+4b. **The app's funding wallet (a separate service):** its own key, a stock of fee-sized coins,
+   and a loopback endpoint p2pd calls for a signed `SIGHASH_SINGLE | ANYONECANPAY` input: for a
+   registration with a valid unused invite, or for a rotation p2pd itself requested (Q6). It goes
+   through Arcade like everything else. p2pd: invite-only registration; the rotation request it
+   sends the page.
 5. **Hodos:** the regenerated bundles; the wallet accepts an app's signed funding input (it signs only
    its own token input) and shows who pays;
    `hodos_tests`, `tsc -b`.
