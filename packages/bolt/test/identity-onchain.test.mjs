@@ -142,6 +142,37 @@ test('rotate: the app\'s request moves the token to the next holder on chain, si
   await assert.rejects(ids.rotate({ domain: SITE, appPubKey: app, data: registerData(app, 4), funder, silent: true }), /rotate/)
 })
 
+test('sign: the app names the holder it expects (the wallet moved further than the app knows): the wallet derives that key, checks its hash, and signs with it for that app until the next move', async () => {
+  const chain = pretendChain()
+  const { ids, app, core, funder } = await registered(chain)
+  await ids.rotate({ domain: SITE, appPubKey: app, data: rotateData(app, 2), funder, silent: true }) // the app never heard of it
+  const holder1 = await core.publicKey('authbolt-0.holder.1')
+  const holder2 = await core.publicKey('authbolt-0.holder.2')
+  const s = await ids.sign({ domain: SITE, appPubKey: app, kind: 'signin', payload: '02aa', silent: true, count: 1, holder: hex(Hash.hash160(holder1)) })
+  assert.equal(s.holder, hex(holder1), 'signed by the holder the app expects')
+  const w = await ids.sign({ domain: SITE, appPubKey: app, kind: 'write', payload: JSON.stringify({ kind: 'message.post' }), silent: true })
+  assert.equal(w.holder, hex(holder1), 'and so is everything after it for that app')
+  // The next move puts the app and the wallet in step again: holder 3 signs from then on.
+  await ids.rotate({ domain: SITE, appPubKey: app, data: rotateData(app, 3), funder, silent: true })
+  const after = await ids.sign({ domain: SITE, appPubKey: app, kind: 'refresh', payload: '03bb', silent: true })
+  assert.equal(after.holder, hex(await core.publicKey('authbolt-0.holder.3')))
+  assert.notEqual(after.holder, hex(holder2))
+})
+
+test('sign: a holder the wallet does not hold is refused, and so is a count past its own or without the holder hash', async () => {
+  const chain = pretendChain()
+  const { ids, app, core } = await registered(chain)
+  const sign = (o) => ids.sign({ domain: SITE, appPubKey: app, kind: 'signin', payload: '02aa', silent: true, ...o })
+  const holder1 = hex(Hash.hash160(await core.publicKey('authbolt-0.holder.1')))
+  await assert.rejects(sign({ count: 1, holder: hex(Hash.hash160(PrivateKey.fromRandom().toPublicKey().encode(true))) }), (e) => e.code === 'NOT_HELD')
+  await assert.rejects(sign({ count: 2, holder: holder1 }), /count/, 'past the wallet\'s own count')
+  await assert.rejects(sign({ count: 0, holder: holder1 }), /count/)
+  await assert.rejects(sign({ count: 1 }), /holder/)
+  // answer passes them on.
+  const s = await ids.answer({ domain: SITE, appPubKey: app, kind: 'signin', payload: '02aa', silent: true, count: 1, holder: holder1 })
+  assert.equal(hex(Hash.hash160(Utils.toArray(s.holder, 'hex'))), holder1)
+})
+
 test('rotate: never silently without the keep-signed-in grant', async () => {
   const chain = pretendChain()
   const { ids, app, funder } = await registered(chain, { keep: false })

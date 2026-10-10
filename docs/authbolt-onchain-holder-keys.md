@@ -112,7 +112,12 @@ Rotation (n -> n+1)
   page ──[commit, settle]──> p2pd: spends the recorded outpoint? seen by Arcade? n+1 next?
   p2pd: new holderPkh, n+1, new outpoint; every session ends
 
-Recovery (reissuance; the token at the lost holder key is dead)
+Out of step (the wallet moved further than p2pd knows: a move whose post never arrived)
+  page ──signin (wallet's holder m)──> p2pd: bad_signature, expected {count n, holder h160(n)}
+  wallet: derives holder n (n <= m), signs only if it hashes to h; keeps holder n for this app
+  page ──signin (holder n)──> p2pd: signed in
+
+Recovery (reissuance; the token is dead: the wallet holds no key the server names)
   wallet: new mint by the SAME issuer key (so the identity, its issuerPubKey, stays)
           + commit (issuer signs: toPkh = h160(holder n+1), tag 06, n+1) + settle, all broadcast
   page ──[mint, commit, settle] answering a sign-in challenge──> p2pd ──> boltverifyd
@@ -144,6 +149,25 @@ Recovery (reissuance; the token at the lost holder key is dead)
   `SIGHASH_SINGLE | ANYONECANPAY | FORKID`, the page hands it to the person's wallet, and the
   wallet adds it to the commit and settle and signs the token input. Rotating silently therefore
   costs the person nothing.
+
+## Out of step is not lost (user, 2026-10-10)
+
+"Shouldn't the wallet be able to derive the key the server wants?" Yes: holder *n* is a counted
+wallet key (Q4), so while the wallet has its seed no holder key is ever lost. When p2pd and the
+wallet disagree, p2pd's refusal of a sign-in or keep-alive (`bad_signature`) names the holder it
+records, `expected: {count, holder}` (both already on chain), and the page asks the wallet once
+more with them: silently, then behind the prompt for a prompted sign-in. The wallet derives holder
+`count` (never past its own), signs only if it hashes to `holder` (else `NOT_HELD`), and keeps
+signing with it for that app until the token's next move. Reissue (Q3) is left for a dead token: the
+server names a holder the wallet does not hold (someone else moved it).
+**Built (2026-10-10):** packages/bolt `IdentityWallet.sign({ count, holder })`; Hodos `f687b364`
+(`ValidateBoltSignHolder`, passed to the overlay); p2p `e4b4d3b` (the refusal names the holder,
+`asExpected` in `web/lib/authbolt.js`, `ApiError.expected`). Live: step 4f of the live test.
+**Not yet:** a wallet that is ahead can sign in and write, but the server's next rotation request
+(count *n*+1 from its recorded outpoint, already spent) is refused by the wallet as out of step;
+catching the server up means posting the unposted move, which needs p2pd to accept a move answering a
+rotation challenge it issued earlier. A wallet that is behind (restored from its seed) has no record
+of the token at all: re-importing it from the app's last package is a follow-up.
 
 ## Step 4 decisions (user, 2026-10-10)
 
@@ -268,6 +292,22 @@ Two more answers (user, 2026-10-10):
 6. **Live:** `tests/authbolt/peerloop.live.mjs` registers on chain, signs in, rotates on chain,
    recovers. Negative controls: an unbroadcast settle is refused at registration; a rotation with
    a skipped count is refused.
+   **Built (2026-10-10):** the live test, rewritten for the on-chain flow, PASSES in Hodos: it starts
+   fundd (seeded from a coinbase) and p2pd with `-fund-url` and `-rotate-after 60s`; registration
+   moves the token to holder 1 (fundd paying ~790 sat with its splits, the settle seen by Arcade);
+   holder 1 signs in and is bound; keep-alive, silent write and prompted role change as before; the
+   rotation p2pd asks for once due moves the token to holder 2 silently and a sign-in by holder 1 is
+   refused; a server record naming a holder the wallet does not hold leads to "Lost your signing
+   key?" and a reissue (holder 3); an unposted move to holder 4 is recovered by the retry above (one
+   click, then a write signed by holder 3). Negative controls, each failing at registration:
+   `NC_NO_VERIFIER=1` (p2pd: "anchor mint … has not been seen") and `NC_NO_FUND=1` (no fundd). The
+   unbroadcast-settle and skipped-count refusals are held by the recorded contract
+   (`off_chain`, `anchor_unseen`, `rotation_stale_outpoint`) and the unit tests, not re-run live.
+   Found on the way: p2pd capped auth bodies at 64 KiB and the first rotation package was ~80 KB
+   (each move carries the token's unmined history, ~20 KB more per move): p2p `452c63c` reads
+   packages up to just under boltverifyd's 1 MiB (trimming proven ancestors from packages is a
+   follow-up); and the page's recovery took the oldest identity `BOLT.list()` returned, not the one
+   that signed: p2p `86c9e34`.
 7. **Wipe the demo again** (after a backup) and re-register fred on the new flow.
 
 ## Related

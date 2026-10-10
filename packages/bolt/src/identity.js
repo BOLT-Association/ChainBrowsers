@@ -263,9 +263,14 @@ export class IdentityWallet {
    * under the keep-signed-in grant for that app on that site, and only for sign-in, keep-alive and
    * the writes the app's published tiers call silent; anything else throws NEEDS_PROMPT. Behind the
    * wallet's prompt (`silent` false) the person chose the identity `id`.
+   *
+   * The app may name the holder it expects (`count` and `holder`, the hash its record holds) when its
+   * record is behind the wallet's (a move it never heard of): the wallet derives holder key `count`
+   * (never past its own count), signs with it only if it hashes to `holder` (else NOT_HELD), and
+   * keeps signing with it for that app until the token's next move.
    * @returns `{ identity, holder, signature }`: the issuer key, the holder key and DER hex
    */
-  async sign ({ id, domain, appPubKey, kind, payload, silent }) {
+  async sign ({ id, domain, appPubKey, kind, payload, silent, count, holder }) {
     const app = checkAppKey(appPubKey)
     if (!['signin', 'refresh', 'write'].includes(kind)) throw new Error(`a page may ask to sign signin, refresh or write, not ${kind}`)
     if (typeof payload !== 'string' || payload.length > MAX_PAYLOAD) throw new Error('the payload must be text of at most 64 KiB')
@@ -275,7 +280,8 @@ export class IdentityWallet {
       throw needsPrompt('the wallet always asks before signing this change')
     }
     const record = await this.#chosen({ id, domain, appPubKey: app, silent })
-    return { identity: record.issuer, ...(await this.#signAs(record.attributes.wallet.holderKeyId, { kind, appPubKey: app, payload })) }
+    const keyId = await this.#signingKey(record, { domain, appPubKey: app, count, holder })
+    return { identity: record.issuer, ...(await this.#signAs(keyId, { kind, appPubKey: app, payload })) }
   }
 
   /**
@@ -283,10 +289,10 @@ export class IdentityWallet {
    * signatures (sign); rotate and reissue move the token on chain (the payload is the app's auth
    * data, `funder` the app's coins). The page learns signatures, public keys and the package.
    */
-  async answer ({ id, domain, appPubKey, kind, payload, silent, funder }) {
+  async answer ({ id, domain, appPubKey, kind, payload, silent, funder, count, holder }) {
     switch (kind) {
       case 'signin': case 'refresh': case 'write':
-        return this.sign({ id, domain, appPubKey, kind, payload, silent })
+        return this.sign({ id, domain, appPubKey, kind, payload, silent, count, holder })
       case 'rotate':
         return this.rotate({ id, domain, appPubKey, data: payload, funder, silent })
       case 'reissue':
@@ -384,7 +390,9 @@ export class IdentityWallet {
 
     await this.#send(commit, 'commit')
     await this.#send(settle, 'settle')
-    const moved = await this.#keep(settle, 0, 'settle', { ...wallet, holderKeyId, holderCount: n })
+    // A key kept for an app whose record was behind (#signingKey) goes: the app has seen this move.
+    const apps = (wallet.apps ?? []).map(({ signCount, ...link }) => link)
+    const moved = await this.#keep(settle, 0, 'settle', { ...wallet, apps, holderKeyId, holderCount: n })
     await this.core.store.delete(record.id)
     return { package: [commit, settle].map((tx) => hex(toAtomicBeef(tx))), id: moved.id }
   }
@@ -403,6 +411,33 @@ export class IdentityWallet {
     const record = await this.#record(id)
     await this.#link(record, { domain, appPubKey })
     return this.#record(id)
+  }
+
+  /**
+   * The key that signs for an app: the holder the app named (checked, then kept for that app), the
+   * one kept for it earlier, or the identity's current holder.
+   */
+  async #signingKey (record, { domain, appPubKey, count, holder }) {
+    const wallet = record.attributes.wallet
+    const apps = [...(wallet.apps ?? [])]
+    const i = apps.findIndex((a) => a.domain === domain && a.appPubKey === appPubKey)
+    if (count === undefined) {
+      const kept = i >= 0 ? apps[i].signCount : undefined
+      return kept ? holderKeyIdOf(wallet.issuerKeyId, kept) : wallet.holderKeyId
+    }
+    const own = wallet.holderCount ?? 0
+    if (!Number.isInteger(count) || count < 1 || count > own) throw new Error(`the app asks for holder ${count}, but this identity has moved to holder ${own} at most: the count is out of range`)
+    if (!isHex(holder, 40)) throw new Error('the app must name the holder it expects (its hash, 20 bytes hex) with the count')
+    const keyId = holderKeyIdOf(wallet.issuerKeyId, count)
+    if (hex(Hash.hash160(await this.core.publicKey(keyId))) !== holder.toLowerCase()) {
+      throw Object.assign(new Error('this wallet does not hold the key the app expects for this identity'), { code: 'NOT_HELD' })
+    }
+    if (i >= 0 && apps[i].signCount !== (count < own ? count : undefined)) {
+      const { signCount, ...link } = apps[i]
+      apps[i] = count < own ? { ...link, signCount: count } : link
+      await this.#annotate(record, { ...wallet, apps })
+    }
+    return keyId
   }
 
   async #signAs (keyId, { kind, appPubKey, payload }) {
