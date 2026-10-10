@@ -1,4 +1,4 @@
-# AuthBOLT holder keys on chain (plan, 2026-10-10, not yet approved)
+# AuthBOLT holder keys on chain (plan, 2026-10-10; questions answered, not yet approved to build)
 
 The V1 design (`authbolt-registration.md`, "After registration: holder-key signatures") keeps an
 identity's holder key **off chain**. It replaces part of that with the model the user set out on
@@ -14,7 +14,9 @@ The user's decisions (2026-10-10):
 - **The next key is covered by the issuer's signature.** The wallet and the backend keep
   **derivation counts** in step.
 - **Later rotations are on chain too:** another commit and settle, by the current holder.
-- **Recovery stays an issuer-signed rebind** (off chain, as in V1).
+- **Recovery stays an issuer-signed rebind** (off chain, as in V1). Refined the same day (Q3): the
+  lost holder's token is dead, so recovery reissues one.
+- **The app pays for its users' transactions** from a wallet of its own (Q5).
 
 ## Today (V1) and what changes
 
@@ -24,7 +26,8 @@ The user's decisions (2026-10-10):
 | **What Arcade is asked** | only whether the mint was seen | whether the mint, commit and settle were seen |
 | **Holder key at registration** | the issuer key; the first sign-in rotates off chain, silently (`moveOffIssuerKey`) | holder *n*, already on chain; no rotation at first sign-in |
 | **Later rotations** | holder-signed rebind, `POST /api/auth/rotate`, `seq` in p2pd's `identities` table | a funded commit and settle by the current holder; p2pd follows the token |
-| **Recovery** | issuer-signed rebind (`POST /api/auth/recover`) | unchanged (see open question Q3) |
+| **Recovery** | issuer-signed rebind (`POST /api/auth/recover`) | **reissuance**: the issuer key mints a new token and moves it to the next holder; the old token is dead (Q3) |
+| **Fees** | the person's wallet | the app's own funding wallet, with signed inputs (Q5) |
 | **Re-registering after a server wipe** | the same token could present again (until V1's mint rule) | impossible: the mint is spent. A new identity, as fred did on 2026-10-10 |
 
 ## How the next key is fixed: the recommendation
@@ -99,42 +102,84 @@ Rotation (n -> n+1)
   page ──[commit, settle]──> p2pd: spends the recorded outpoint? seen by Arcade? n+1 next?
   p2pd: new holderPkh, n+1, new outpoint; every session ends
 
-Recovery (unchanged)
-  issuer key signs a rebind to holder n+1 over a sign-in challenge ──> p2pd
+Recovery (reissuance; the token at the lost holder key is dead)
+  wallet: new mint by the SAME issuer key (so the identity, its issuerPubKey, stays)
+          + commit (issuer signs: toPkh = h160(holder n+1), tag 06, n+1) + settle, all broadcast
+  page ──[mint, commit, settle] answering a sign-in challenge──> p2pd ──> boltverifyd
+  p2pd: same issuer as a recorded identity? new outpoint, holderPkh, n+1; every session ends
 ```
 
-## Open questions (to answer before building)
+## Answers (user, 2026-10-10)
 
-- **Q1. The verifier's anchor rule.** Is "the commit and settle were seen by Arcade" enough at
-  registration, or must the settle be **mined** (proven into p2pd's headers) before the account is
-  approved? Recommendation: seen is enough to register; first-seen settles conflicts.
-- **Q2. Who learns about a rotation.** The page posts the commit and settle to p2pd (as above), or
-  p2pd watches the token's outpoint through Arcade itself. Recommendation: the page posts them.
-  Arcade has no outspend lookup, so p2pd could not watch by itself.
-- **Q3. After a recovery, the token is stranded.** The recovery rebinds the account off chain, but
-  the token still sits at the lost holder key, which nobody can move. Should later rotations then
-  be off chain for that identity, or does recovery mean registering a new identity?
-  Recommendation: after a recovery, rotations are off-chain rebinds by the recovered key (V1's
-  path, kept for this case only).
-- **Q4. Counted issuer keys.** Issuer keyIDs are random today (`authbolt-<16 random bytes>`), so a
-  seed restore cannot find an identity without the token store (which is not in Hodos's backup).
-  Should identities be counted too (`authbolt-<i>`), so a seed and two counts recover everything?
-- **Q5. Keep-signed-in.** Rotations cost two transaction fees. Under the keep-signed-in grant, may
-  the wallet rotate (and pay) silently, or always ask?
+- **Q1. The anchor rule: seen by Arcade is enough.** "Seen by is enough it means it's going to be
+  mined." The mint, commit and settle must each be seen by Arcade; nobody waits for a block.
+- **Q2. A rotation is posted by the page.** Yes: the page sends the commit and settle to p2pd
+  (Arcade has no lookup for what spent an output, so p2pd could not watch for it).
+- **Q3. After a recovery: "Token is dead needs reissuance".** A token whose holder key is lost can
+  never move again. Recovery therefore mints a **new** token with the identity's **same issuer
+  key**, so the identity (its `issuerPubKey`) and the account stay, and moves it at once to holder
+  *n*+1. p2pd replaces the recorded outpoint. That replaces V1's off-chain rebind
+  (`POST /api/auth/recover` takes the new package instead of a signed rebind). The issuer key
+  stays the one thing to keep safe. Proposed tag for its commit: `06`.
+- **Q4. Counted issuer keys: "Why not?"** No reason against: a keyID with counterparty `self` can
+  only be derived with the wallet's master private key, so counting reveals nothing to anyone else.
+  Identity *i* uses keyID `authbolt-<i>`, holder *n* uses `authbolt-<i>.holder.<n>`, and the
+  wallet keeps the next *i*. Existing identities keep their random keyIDs (they are stored). A seed
+  restore can then re-derive every identity key (`authbolt-0, 1, 2…`) and every holder key from
+  its count. It cannot find the tokens themselves from Arcade, which has no lookup by key or
+  address: the outpoints must come from the app's records (Q7) or an indexer.
+- **Q5. Silent rotation under the grant: yes.** In the user's words: "we are going to make the p2p
+  app have it's own wallet for funding user transactions, it will send signed inputs with
+  sighashSingle". The person's wallet does not pay: p2pd's own wallet signs a funding input with
+  `SIGHASH_SINGLE | ANYONECANPAY | FORKID`, the page hands it to the person's wallet, and the
+  wallet adds it to the commit and settle and signs the token input. Rotating silently therefore
+  costs the person nothing.
+
+## App-funded transactions: what b017 allows
+
+b017's covenant fixes the layout (`singleSpend.ts`): inputs `[token, proof?, funding?]`, outputs
+`[token, proof output?, change?]`. That allows one funding input, with change optional and
+returned to whoever funded it. `SIGHASH_SINGLE` signs only the output at the same index as the
+signed input:
+
+| Transaction | Funding input | Output at that index | What the app's signature covers |
+|---|---|---|---|
+| commit | 1 | the proof output (1 sat to the new holder) | not the app's change: the person could redirect it |
+| settle from the mint | 1 | the change | the app's change |
+| settle after a commit with a proof input | 2 | none | no output at all |
+
+Recommendation: the app funds each transaction with a **coin of exactly the fee** and takes **no
+change**. Then whatever `SIGHASH_SINGLE` covers, the app cannot lose more than that fee, and the
+person cannot divert anything. The app's wallet keeps a stock of fee-sized coins (split ahead of
+time). The alternative, `SIGHASH_ALL | ANYONECANPAY` with change, would make the app build the
+whole output list itself.
+
+Further questions this raises:
+
+- **Q6. Abuse.** Any signed-in person can ask the app for fee coins. What limits it: one coin per
+  registration and rotation, a rate limit per identity?
+- **Q7. Where the app keeps its records.** p2pd records each identity's token outpoint and count
+  (step 4). Should p2pd also answer a restored wallet's "which tokens and counts are mine?"
+  (signed by the issuer key), since Arcade cannot?
 
 ## Steps (red then green; the gates on every green commit)
 
 1. **b017-native and packages/bolt:** the register auth data with *n* (70 bytes) and the rotation
    tag; contract vectors re-recorded.
-2. **packages/bolt:** registration funds and broadcasts the commit and settle to holder *n*;
-   counted holder keyIDs; on-chain `rotateHolder`; the off-chain rotate and confirm go (recover
-   stays). Pretend-chain tests.
+2. **packages/bolt:** registration broadcasts the commit and settle to holder *n*, funded by the
+   app's signed input; counted identity and holder keyIDs (Q4); on-chain `rotateHolder`; recovery
+   by reissuance (Q3); the off-chain rotate, confirm and rebind go. Pretend-chain tests.
 3. **boltverifyd and the Node sidecar:** the anchor rule (commit and settle seen) and the verdict
    fields; b017-native's `go/authbolt` the same.
 4. **p2pd:** `identities` gains `holder_pkh`, `count` and `outpoint` (a migration); register
    records them; the first signature binds the key; `POST /api/auth/rotate` takes a commit and
-   settle; the web client drops `moveOffIssuerKey`.
-5. **Hodos:** the regenerated bundles; the prompt says that registering spends a small fee twice;
+   settle; `POST /api/auth/recover` takes a reissued package; the web client drops
+   `moveOffIssuerKey`.
+4b. **p2pd's funding wallet:** a key of its own (a secret, kept outside boltverifyd), a stock of
+   fee-sized coins, and an endpoint that hands a signed `SIGHASH_SINGLE | ANYONECANPAY` input to a
+   signed-in page (Q6). It goes through Arcade like everything else.
+5. **Hodos:** the regenerated bundles; the wallet accepts an app's signed funding input (it signs only
+   its own token input) and shows who pays;
    `hodos_tests`, `tsc -b`.
 6. **Live:** `tests/authbolt/peerloop.live.mjs` registers on chain, signs in, rotates on chain,
    recovers. Negative controls: an unbroadcast settle is refused at registration; a rotation with
