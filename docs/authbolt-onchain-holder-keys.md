@@ -238,6 +238,19 @@ Two more answers (user, 2026-10-10):
    registration with a valid unused invite, or for a rotation p2pd itself requested (Q6). It goes
    through Arcade like everything else. p2pd: invite-only registration; the rotation request it
    sends the page.
+   **Built (2026-10-10):** p2p `9a82af9` (p2pd: holder hash, count and outpoint per identity; the
+   first signature binds the holder key; `rotate` in sign-in and keep-alive answers after
+   `-rotate-after`; `POST /api/auth/rotate` and `/recover` take `{challenge, package}`; web client
+   rotates when asked and recovers by reissue), `68e2c8a` + `f03fa67` (fundd: `p2p/fundd`, its own key
+   and coin stock, `/deposit`, `/coin` signing SIGHASH_SINGLE | ANYONECANPAY | FORKID; p2pd
+   `POST /api/auth/fund`, flags `-fund-url`, `-fund-secret-file`, `-max-fund`; a labctl `fundd`
+   gate). Live: `tests/fundd/fundd.live.mjs` funds a transaction on the regtest stack and Teranode
+   accepts it (negative control `NC_TAMPER=1`). What the wallet must send fundd: its draft with the
+   outputs final and **empty unlocking scripts** on its own inputs (an unsigned input does not
+   serialise otherwise); a deposit BEEF must carry the deposit's parent (or fundd sends it raw).
+   Not yet: registration invites (registration is funded per challenge, capped); fundd's coin
+   BEEFs grow as an unproven chain back to the last proven deposit (refreshing merkle paths from
+   Arcade is a follow-up).
 5. **Hodos:** the regenerated bundles; the wallet accepts an app's signed funding input (it signs only
    its own token input) and shows who pays;
    `hodos_tests`, `tsc -b`.
