@@ -244,3 +244,9 @@ The covenant is unchanged. What changed:
   `{"issuer","newHolder","seq"}`) and `recoverHolder` (signed by the issuer key over the app's
   challenge, `{"issuer","newHolder","seq","challenge"}`) prepare the app's request; `confirmHolder`
   switches to the new key once the app accepted it. Keys are per app (`signKeyId`, `signSeq`).
+
+## Next: holder keys on chain (planned 2026-10-10)
+
+Registration becomes a funded, broadcast commit and settle that moves the token from the issuer
+key to holder key *n*; later rotations are on chain too; recovery stays an issuer-signed rebind.
+Plan, the key-derivation recommendation and open questions: `authbolt-onchain-holder-keys.md`.
