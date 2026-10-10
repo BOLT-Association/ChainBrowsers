@@ -77,9 +77,19 @@ seed can re-derive every holder key from the count alone. The server refuses a r
 | 32 | challenge hash |
 | 4 | holder count *n*, big-endian (new) |
 
-70 bytes, within the 75-byte cap. The other purposes keep their 66 bytes. A rotation commit carries
-a new tag (proposed: `05`) with the app key, *n*+1 and 32 zero bytes, so a rotation names the app
-and the count it moves to.
+70 bytes, within the 75-byte cap. The other purposes keep their 66 bytes. A rotation (`05`) and a
+reissue (`06`) have the same layout: the app requests a rotation, so it issues a challenge like any
+other, and the rotation's auth data carries that challenge's hash (not zero bytes, as first
+proposed) and the count it moves to. That binds each rotation to the app's request, so it cannot
+be replayed.
+
+**Built (step 1, 2026-10-10):** the shared contract `p2p/testdata/contract/authdata/authdata.json`
+(computed with Python; copies in `packages/bolt/test/fixtures/auth-data.json` and b017-native
+`vectors/auth-data.json`) is held by `packages/bolt` (`encodeAuthData` / `decodeAuthData`, which take
+and return `count`), b017-native (`DecodeAuthData`, `AuthData.Count`) and p2p (`authbolt.AuthData`
+with a count; a register challenge names holder 1). Nothing presents counted data yet; that is step 2.
+Until the Hodos bundle (step 5) and boltverifyd (step 3) catch up, a p2pd built from this commit
+issues register data the deployed wallet and verifier refuse.
 
 ## Flow
 

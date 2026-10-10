@@ -34,7 +34,7 @@ test('auth data: tag, app key and challenge hash, 66 bytes, and nothing else rea
   const data = encodeAuthData({ purpose: 'signin', appPubKey: app, challengeHash: challenge() })
   assert.equal(data.length, AUTH_DATA_BYTES * 2)
   assert.deepEqual(decodeAuthData(data), { purpose: 'signin', appPubKey: app, challengeHash: challenge() })
-  for (const purpose of ['register', 'signin', 'refresh', 'write']) {
+  for (const purpose of ['signin', 'refresh', 'write']) {
     assert.equal(decodeAuthData(encodeAuthData({ purpose, appPubKey: app, challengeHash: challenge() })).purpose, purpose)
   }
   assert.throws(() => decodeAuthData(data.slice(2)), /66 bytes/)
@@ -42,6 +42,26 @@ test('auth data: tag, app key and challenge hash, 66 bytes, and nothing else rea
   assert.throws(() => decodeAuthData(data.slice(0, 2) + '05' + data.slice(4)), /app key/)
   assert.throws(() => encodeAuthData({ purpose: 'pay', appPubKey: app, challengeHash: challenge() }), /purpose/)
   assert.throws(() => encodeAuthData({ purpose: 'signin', appPubKey: app, challengeHash: 'ab' }), /32 bytes/)
+})
+
+// The shared contract (p2p testdata/contract/authdata/authdata.json, computed with Python): register,
+// rotate and reissue carry the holder count after the challenge hash (70 bytes); the rest do not (66).
+const authDataVectors = JSON.parse(readFileSync(new URL('./fixtures/auth-data.json', import.meta.url), 'utf8'))
+
+test('auth data: the contract vectors, counted (register, rotate, reissue) and not', () => {
+  for (const c of authDataVectors.cases) {
+    const fields = { purpose: c.purpose, appPubKey: c.appPubKey, challengeHash: c.challengeHash }
+    if (c.count !== undefined) fields.count = c.count
+    assert.equal(encodeAuthData(fields), c.hex, `${c.purpose} ${c.count ?? ''}`)
+    assert.deepEqual(decodeAuthData(c.hex), fields, `${c.purpose} ${c.count ?? ''}`)
+  }
+  for (const c of authDataVectors.invalid) assert.throws(() => decodeAuthData(c.hex), undefined, c.why)
+  const app = authDataVectors.cases[0].appPubKey
+  assert.throws(() => encodeAuthData({ purpose: 'register', appPubKey: app, challengeHash: challenge() }), /count/, 'register needs a count')
+  assert.throws(() => encodeAuthData({ purpose: 'signin', appPubKey: app, challengeHash: challenge(), count: 1 }), /count/, 'signin takes none')
+  for (const count of [0, -1, 1.5, 2 ** 32]) {
+    assert.throws(() => encodeAuthData({ purpose: 'rotate', appPubKey: app, challengeHash: challenge(), count }), /count/, `count ${count}`)
+  }
 })
 
 test('create: each identity is a new AuthBOLT under its own key, and its funding change is 1 sat', async () => {
@@ -64,7 +84,7 @@ test('present: tags the identity for the app, and a relying party learns the iss
   const site = verifierOn(chain)
   const app = appKey()
   const id = await ids.create()
-  const data = encodeAuthData({ purpose: 'register', appPubKey: app, challengeHash: challenge() })
+  const data = encodeAuthData({ purpose: 'register', appPubKey: app, challengeHash: challenge(), count: 1 })
 
   const { package: pkg, id: used } = await ids.present({ id: id.id, domain: SITE, appPubKey: app, data })
   assert.equal(used, id.id)
@@ -89,7 +109,7 @@ test('present: data that names another app, or is not auth data, is refused befo
   const before = calls.filter((c) => c === 'createSignature').length
   const foreign = encodeAuthData({ purpose: 'signin', appPubKey: appKey(), challengeHash: challenge() })
   await assert.rejects(ids.present({ id: id.id, domain: SITE, appPubKey: app, data: foreign }), /another app/)
-  await assert.rejects(ids.present({ id: id.id, domain: SITE, appPubKey: app, data: 'ab'.repeat(20) }), /66 bytes/)
+  await assert.rejects(ids.present({ id: id.id, domain: SITE, appPubKey: app, data: '02' + 'ab'.repeat(19) }), /66 bytes/)
   await assert.rejects(ids.present({ id: id.id, domain: SITE, appPubKey: 'zz', data: foreign }), /app key/)
   assert.equal(calls.filter((c) => c === 'createSignature').length, before, 'nothing was signed')
 })
@@ -178,7 +198,7 @@ test('rotate: a self-transfer to a new holder key; the issuer, the tags and the 
   const site = verifierOn(chain)
   const app = appKey()
   const id = await ids.create()
-  await ids.present({ id: id.id, domain: SITE, appPubKey: app, data: encodeAuthData({ purpose: 'register', appPubKey: app, challengeHash: challenge() }) })
+  await ids.present({ id: id.id, domain: SITE, appPubKey: app, data: encodeAuthData({ purpose: 'register', appPubKey: app, challengeHash: challenge(), count: 1 }) })
 
   const moved = await ids.rotate(id.id)
   assert.notEqual(moved.id, id.id)
@@ -194,7 +214,7 @@ test('rotate: a self-transfer to a new holder key; the issuer, the tags and the 
   assert.equal(r.ok, false)
   assert.match(r.reason, /mint/)
   const app2 = appKey()
-  await assert.rejects(ids.present({ id: moved.id, domain: SITE, appPubKey: app2, data: encodeAuthData({ purpose: 'register', appPubKey: app2, challengeHash: challenge() }) }), /mint/)
+  await assert.rejects(ids.present({ id: moved.id, domain: SITE, appPubKey: app2, data: encodeAuthData({ purpose: 'register', appPubKey: app2, challengeHash: challenge(), count: 1 }) }), /mint/)
 })
 
 // ---- holder-key signatures (PeerLoop's V1 plan): after registering, an app knows the identity's
@@ -212,7 +232,7 @@ async function registered (chain, { keep = true } = {}) {
   const w = identityOn(chain)
   const app = appKey()
   const id = await w.ids.create()
-  await w.ids.present({ id: id.id, domain: SITE, appPubKey: app, data: encodeAuthData({ purpose: 'register', appPubKey: app, challengeHash: challenge() }), keepSignedIn: keep })
+  await w.ids.present({ id: id.id, domain: SITE, appPubKey: app, data: encodeAuthData({ purpose: 'register', appPubKey: app, challengeHash: challenge(), count: 1 }), keepSignedIn: keep })
   return { ...w, app, id }
 }
 
@@ -302,7 +322,7 @@ test('verifyIdentity: a presentation must spend the token\'s own mint, carried i
   const site = verifierOn(chain)
   const app = appKey()
   const id = await ids.create()
-  const data = encodeAuthData({ purpose: 'register', appPubKey: app, challengeHash: challenge() })
+  const data = encodeAuthData({ purpose: 'register', appPubKey: app, challengeHash: challenge(), count: 1 })
   const { package: pkg } = await ids.present({ id: id.id, domain: SITE, appPubKey: app, data })
   const r = await verifyIdentity({ handler: site, package: pkg, appPubKey: app, data })
   assert.equal(r.ok, true, r.reason)

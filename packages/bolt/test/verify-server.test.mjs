@@ -37,7 +37,7 @@ const post = (url, body, { secret = SECRET, raw } = {}) => fetch(`${url}/verify`
 
 test('POST /verify: a good presentation is ok, with the issuer the app records', async () => {
   const { ids, server, url, app, id } = await setup()
-  const data = encodeAuthData({ purpose: 'register', appPubKey: app, challengeHash: challenge('n1') })
+  const data = encodeAuthData({ purpose: 'register', appPubKey: app, challengeHash: challenge('n1'), count: 1 })
   const { package: pkg } = await ids.present({ id: id.id, domain: 'peerloop.example', appPubKey: app, data })
   const res = await post(url, { package: pkg, appPubKey: app, data })
   assert.equal(res.status, 200)

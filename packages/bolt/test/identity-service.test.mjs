@@ -51,7 +51,7 @@ test('identityService: creates, links and presents an identity through the walle
   const ids = identityService(rails.call)
   const app = PrivateKey.fromRandom().toPublicKey().toString()
   const created = await ids.create()
-  const data = encodeAuthData({ purpose: 'register', appPubKey: app, challengeHash: 'cd'.repeat(32) })
+  const data = encodeAuthData({ purpose: 'register', appPubKey: app, challengeHash: 'cd'.repeat(32), count: 1 })
   const { package: pkg } = await ids.present({ id: created.id, domain: 'peerloop.example', appPubKey: app, data, keepSignedIn: true })
 
   const site = new BoltHandler({ core: brc100Core({ wallet: { getHeaderForHeight: async ({ height }) => ({ header: chain.headers.get(height) }) }, broadcast: chain.broadcast }) })

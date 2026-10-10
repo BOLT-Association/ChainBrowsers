@@ -40,7 +40,11 @@ import { WRITE_TIERS } from './write-tiers.js'
  *  wallet can refuse it to sites and keep identity signing to its own prompt. */
 export const IDENTITY_PROTOCOL = [2, 'authbolt identity']
 export const AUTH_DATA_BYTES = 66
-const PURPOSES = { register: 1, signin: 2, refresh: 3, write: 4 }
+/** Register, rotate and reissue also carry the holder count (4 bytes, big-endian, at least 1): 70 bytes. */
+export const COUNTED_AUTH_DATA_BYTES = 70
+const PURPOSES = { register: 1, signin: 2, refresh: 3, write: 4, rotate: 5, reissue: 6 }
+const COUNTED = ['register', 'rotate', 'reissue']
+const MAX_COUNT = 0xffffffff
 /** The purposes a wallet presents without asking, under the person's keep-signed-in grant. */
 const SILENT = ['refresh', 'write']
 const PURPOSE_OF = Object.fromEntries(Object.entries(PURPOSES).map(([k, v]) => [v, k]))
@@ -58,23 +62,37 @@ function checkAppKey (appPubKey) {
   return appPubKey.toLowerCase()
 }
 
-/** Auth data for a presentation (hex). */
-export function encodeAuthData ({ purpose, appPubKey, challengeHash }) {
+/** Auth data for a presentation (hex): [tag 1][app key 33][challenge hash 32], plus [count 4] when counted. */
+export function encodeAuthData ({ purpose, appPubKey, challengeHash, count }) {
   const tag = PURPOSES[purpose]
-  if (!tag) throw new Error(`unknown purpose ${purpose}: register, signin, refresh or write`)
+  if (!tag) throw new Error(`unknown purpose ${purpose}: register, signin, refresh, write, rotate or reissue`)
   if (!isHex(challengeHash, 64)) throw new Error('the challenge hash must be 32 bytes (hex)')
-  return (tag.toString(16).padStart(2, '0') + checkAppKey(appPubKey) + challengeHash).toLowerCase()
+  const counted = COUNTED.includes(purpose)
+  if (counted && !(Number.isInteger(count) && count >= 1 && count <= MAX_COUNT)) {
+    throw new Error(`${purpose} auth data needs the holder count, an integer from 1 to ${MAX_COUNT}`)
+  }
+  if (!counted && count !== undefined) throw new Error(`${purpose} auth data carries no count`)
+  const tail = counted ? count.toString(16).padStart(8, '0') : ''
+  return (tag.toString(16).padStart(2, '0') + checkAppKey(appPubKey) + challengeHash + tail).toLowerCase()
 }
 
 /** Read auth data; throws on anything that is not exactly that. */
 export function decodeAuthData (data) {
   const s = typeof data === 'string' ? data.toLowerCase() : hex(data)
-  if (!isHex(s, AUTH_DATA_BYTES * 2)) throw new Error(`auth data must be exactly ${AUTH_DATA_BYTES} bytes (hex)`)
+  if (!isHex(s, s.length) || s.length < 2) throw new Error('auth data must be hex')
   const purpose = PURPOSE_OF[parseInt(s.slice(0, 2), 16)]
   if (!purpose) throw new Error(`unknown purpose tag 0x${s.slice(0, 2)}`)
+  const counted = COUNTED.includes(purpose)
+  const bytes = counted ? COUNTED_AUTH_DATA_BYTES : AUTH_DATA_BYTES
+  if (s.length !== bytes * 2) throw new Error(`${purpose} auth data must be exactly ${bytes} bytes (hex)`)
   let appPubKey
   try { appPubKey = checkAppKey(s.slice(2, 68)) } catch { throw new Error('the auth data does not carry a valid app key') }
-  return { purpose, appPubKey, challengeHash: s.slice(68) }
+  const out = { purpose, appPubKey, challengeHash: s.slice(68, 132) }
+  if (counted) {
+    out.count = parseInt(s.slice(132), 16)
+    if (out.count < 1) throw new Error('the holder count must be at least 1')
+  }
+  return out
 }
 
 const SIGN_PREFIX = 'PeerLoop/1\n'
