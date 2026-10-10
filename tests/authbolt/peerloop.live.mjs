@@ -13,12 +13,21 @@
 //   1. the page has window.BOLT with requestPresentation and no present; an AuthBOLT cannot be
 //      minted from the page;
 //   2. registering: the person fills the form, Hodos's prompt offers a new identity for this site,
-//      the person creates it; the server verifies the presentation and (an admin's name) approves;
-//   3. signing in again after signing out: the prompt offers the identity linked to this site;
-//   4. the keep-alive: a refresh presentation with no prompt shown, accepted by the server;
-//   4b. a signed write: a message sent from the composer is signed silently by the wallet (no prompt),
-//      stored only once the server verified it, and its proof names the same identity;
-//   5. refusals: a made-up presentation, and a presentation answering another challenge.
+//      the person creates it; the server verifies the presentation (it must spend the token's own
+//      mint) and (an admin's name) approves; this is the only presentation;
+//   3. the first sign-in: a holder-key signature in Hodos's sign prompt, signed by the issuer key,
+//      so the page moves the account to a holder key of its own (silently, under the grant) and
+//      signs in again with it;
+//   4. the keep-alive: a silent holder signature, no prompt shown;
+//   4b. a signed write: a message sent from the composer is signed silently by the holder key,
+//      stored only once the server verified it;
+//   4c. a prompted change: giving another person a role; the wallet refuses to sign it silently and
+//      signs it only behind its prompt, which shows the change as text;
+//   4d. a rotation: the account moves to a new holder key; a signature by the old key is refused;
+//   4e. a recovery: the wallet's key no longer matches the server's (a lost key), the sign-in fails
+//      with "Lost your signing key?", and the identity's issuer key rebinds the account in Hodos's
+//      prompt; signing in works again;
+//   5. refusals: a made-up presentation at registration, and a signature by no holder key.
 //
 // Before running: the stack up (spv-testnet/stack), Hodos started with
 //   tests/cross-wallet/start-hodos.ps1 -BrowserArgs '--host-resolver-rules="MAP app.lab 127.0.0.1"','--ignore-certificate-errors'
@@ -95,6 +104,14 @@ writeFileSync(secretFile, SECRET + '\n')
 try { execFileSync('docker', ['rm', '-f', 'cb-authbolt-rqlite'], { stdio: 'ignore' }) } catch {}
 execFileSync('docker', ['run', '-d', '--rm', '--name', 'cb-authbolt-rqlite', '-p', `127.0.0.1:${RQLITE_PORT}:4001`, 'rqlite/rqlite:10.3.7'], { stdio: 'ignore' })
 await until('rqlite', async () => (await fetch(`http://127.0.0.1:${RQLITE_PORT}/readyz`)).ok)
+/** Rows from the throwaway database, as objects. */
+async function rows (sql) {
+  const j = await (await fetch(`http://127.0.0.1:${RQLITE_PORT}/db/query?q=${encodeURIComponent(sql)}`)).json()
+  const r = j.results[0]
+  if (r.error) throw new Error(r.error)
+  return (r.values ?? []).map((v) => Object.fromEntries(r.columns.map((c, i) => [c, v[i]])))
+}
+const identityRow = async (issuer) => (await rows(`SELECT holder_pubkey, seq FROM identities WHERE issuer = '${issuer}'`))[0]
 
 const headersFile = join(OUT, 'headers.txt')
 rmSync(headersFile, { force: true })
@@ -114,7 +131,7 @@ if (SIDECAR) {
     BOLT_VERIFY_SECRET: SECRET, ARCADE_URL: NC ? NOWHERE : 'http://localhost:8080', HEADERS_URL: 'http://127.0.0.1:8099', BOLT_VERIFY_PORT: '8097',
   })
 } else {
-  execFileSync('go', ['build', '-o', join(ROOT, 'p2p/boltverifyd/boltverifyd.exe'), './boltverifyd'], { cwd: join(ROOT, 'p2p'), stdio: 'inherit' })
+  execFileSync('go', ['build', '-o', join(ROOT, 'p2p/boltverifyd/boltverifyd.exe'), '.'], { cwd: join(ROOT, 'p2p/boltverifyd'), stdio: 'inherit' }) // its own Go module
   start('boltverifyd', join(ROOT, 'p2p/boltverifyd/boltverifyd.exe'), [
     '-addr', '127.0.0.1:8097', '-secret-file', secretFile,
     '-arcade-url', NC ? NOWHERE : 'http://localhost:8080',
@@ -171,30 +188,55 @@ assert.match(registerPrompt, /with an AuthBOLT identity/)
 step('Hodos showed its own prompt: "Create an account on app.lab", offering a new identity for this site')
 await clickPrompt('Create account')
 
-// An admin's name is approved at once; the page then signs in, which asks the person again.
-await until('the sign-in prompt after registering', async () => /Sign in on app\.lab/.test(await promptText().catch(() => '')) || null, 120000)
+// ---- 3. the first sign-in: a holder signature, then off the issuer key -----------------------------------
+// Hodos's sign prompt (not the identity prompt): "Sign in on app.lab … with your AuthBOLT identity".
+const signPrompt = async (title) => {
+  const t = await promptText().catch(() => '')
+  return t.includes(`${title} on app.lab`) && /with your AuthBOLT identity/.test(t) ? t : null
+}
+await until('the sign-in prompt after registering', () => signPrompt('Sign in'), 120000)
 await capture(prompt, join(OUT, '2-signin-prompt.png')).catch(() => {})
-assert.match(await promptText(), /Your identity for this site/)
-step('registered: the server verified the presentation (its chain, Arcade for the anchor) and approved the admin; now "Sign in on app.lab" offers the linked identity')
-await clickPrompt('Sign in')
+step('registered: the server verified the presentation (its chain, Arcade for the anchor, the token\'s own mint) and approved the admin; now Hodos asks to sign in with a holder signature')
+await clickPrompt('Sign')
+
+// That signature was by the issuer key (no holder key yet), so the page rotated silently and asks again.
+const me0 = await until('the identity to be recorded', async () => (await rows(`SELECT identity FROM users WHERE name = '${ADMIN}'`))[0]?.identity || null)
+const moved = await until('the account to move off the issuer key', async () => {
+  const r = await identityRow(me0)
+  return r && r.holder_pubkey !== me0 ? r : null
+})
+assert.ok(moved.seq >= 1, `rotation seq ${moved.seq}`)
+step(`first sign-in was by the issuer key, so the page moved the account to a holder key of its own without a prompt (seq ${moved.seq}, holder ${moved.holder_pubkey.slice(0, 12)}…)`)
+await until('the sign-in prompt with the new key', () => signPrompt('Sign in'))
+await clickPrompt('Sign')
 await until('the workspace', async () => (await screen()) === 'workspace', 60000)
 const me = await inPage('return (await fetch("/api/me")).json()')
 assert.equal(me.name, ADMIN)
+assert.equal(me.identity, me0)
 assert.match(me.identity, /^0[23][0-9a-f]{64}$/)
 assert.equal(me.links.x, `peerloop_${RUN}`)
 await capture(isPage, join(OUT, '3-workspace.png')).catch(() => {})
-step(`signed in as ${me.name}, identity ${me.identity.slice(0, 12)}…, X @${me.links.x}`)
+step(`signed in as ${me.name} with the holder key, identity ${me.identity.slice(0, 12)}…, X @${me.links.x}`)
 
-// ---- 4. keep-alive: a refresh presentation with no prompt shown ---------------------------------------
-const refreshed = await inPage(`
-  const ch = await (await fetch('/api/auth/challenge', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ purpose: 'refresh' }) })).json()
-  const shown = await window.BOLT.requestPresentation({ appPubKey: ch.appKey, data: ch.data, purpose: 'refresh', silent: true })
-  const r = await fetch('/api/auth/refresh', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ challenge: ch.id, package: shown.package }) })
-  return { status: r.status, body: await r.json() }`)
-assert.equal(refreshed.status, 200, JSON.stringify(refreshed.body))
-assert.equal(refreshed.body.identity, me.identity)
-assert.doesNotMatch(await promptText().catch(() => ''), /Sign in on app\.lab/, 'no prompt was shown for the keep-alive')
-step('keep-alive: a silent presentation renewed the session (the person chose "keep me signed in"), no prompt shown')
+// The page's own client code, run in the page: the API client and the signer it uses for every change.
+const CLIENT = `
+  const { ApiClient } = await import('/lib/api.js')
+  const { Signer } = await import('/lib/signer.js')
+  const auth = await import('/lib/authbolt.js')
+  const api = new ApiClient()
+  const meNow = await api.me().catch(() => null)
+  if (meNow) api.signer = new Signer({ bolt: window.BOLT, appKey: meNow.signing?.appKey ?? '', sid: meNow.signing?.sid ?? '' })
+`
+
+// ---- 4. keep-alive: a silent holder signature ---------------------------------------------------------
+const refreshed = await inPage(`${CLIENT}
+  const ch = await api.challenge('refresh')
+  const s = await window.BOLT.sign({ kind: 'refresh', appPubKey: ch.appKey, payload: ch.data, silent: true })
+  return { me: await api.refresh(ch.id, s.identity, s.signature), holder: s.holder }`)
+assert.equal(refreshed.me.identity, me.identity)
+assert.equal(refreshed.holder, moved.holder_pubkey, 'the keep-alive is signed by the holder key')
+assert.equal(await signPrompt('Stay signed in'), null, 'no prompt was shown for the keep-alive')
+step('keep-alive: a silent holder signature renewed the session (the person chose "keep me signed in"), no prompt shown')
 
 // ---- 4b. a signed write: the app's own composer, the wallet's silent signature, the server's check ----
 const text = `signed hello ${RUN}`
@@ -210,36 +252,105 @@ const sent = await until('the message to be signed and stored', async () => {
 })
 const proof = await inPage(`return (await fetch('/api/messages/${sent.id}/proof')).json()`)
 const signedWrite = JSON.parse(proof.write)
-assert.equal(proof.issuer, me.identity, 'the write is signed by the account\'s own identity')
+assert.equal(proof.issuer, me.identity, 'the write belongs to the account\'s identity')
+assert.equal(proof.holder, moved.holder_pubkey, 'and is signed by its holder key')
 assert.equal(signedWrite.kind, 'message.post')
 assert.equal(signedWrite.body.text, text)
 assert.equal(signedWrite.target, 'POST /api/channels/1/messages')
-assert.doesNotMatch(await promptText().catch(() => ''), /Sign in on app\.lab/, 'no prompt was shown for the write')
+assert.equal(await signPrompt('Approve a change'), null, 'no prompt was shown for the write')
 await capture(isPage, join(OUT, '4b-signed-message.png')).catch(() => {})
-step(`a message from the composer was signed silently, verified by ${SIDECAR ? 'the sidecar' : 'p2pd'} and stored with its proof (issuer ${proof.issuer.slice(0, 12)}…)`)
+step(`a message from the composer was signed silently by the holder key and stored once the server verified it (holder ${proof.holder.slice(0, 12)}…)`)
 
-// ---- 3. sign out, sign in again: the linked identity is offered -------------------------------------
+// ---- 4c. a prompted change: another person's role --------------------------------------------------------
+// The other person is a row in this throwaway database: only the admin's signature is under test.
+const [{ org_id: org }] = await rows(`SELECT org_id FROM users WHERE name = '${ADMIN}'`)
+const OTHER = `member-${RUN}`
+await fetch(`http://127.0.0.1:${RQLITE_PORT}/db/execute`, {
+  method: 'POST', headers: { 'content-type': 'application/json' },
+  body: JSON.stringify([[`INSERT INTO users (org_id, name, name_key, role) VALUES (?, ?, ?, 'member')`, org, OTHER, OTHER]]),
+})
+const [{ id: otherId }] = await rows(`SELECT id FROM users WHERE name = '${OTHER}'`)
+const silentTry = await inPage(`${CLIENT}
+  const write = JSON.stringify({ v: 1, kind: 'user.role', target: 'PATCH /api/admin/users/${otherId}', body: { role: 'moderator' }, at: Date.now(), seq: Date.now(), sid: meNow.signing.sid })
+  try { await window.BOLT.sign({ kind: 'write', appPubKey: meNow.signing.appKey, payload: write, silent: true }); return 'signed' } catch (e) { return e.message }`)
+assert.match(silentTry, /NEEDS_PROMPT/, `a role change must not be signed silently (got: ${silentTry})`)
+const roleChange = inPage(`${CLIENT} return api.setUserRole(${otherId}, 'moderator')`)
+const rolePrompt = await until('the prompt for the role change', () => signPrompt('Approve a change'))
+assert.match(rolePrompt, /user\.role/)
+assert.match(rolePrompt, /PATCH \/api\/admin\/users\//)
+assert.match(rolePrompt, /moderator/)
+await capture(prompt, join(OUT, '4c-role-prompt.png')).catch(() => {})
+await clickPrompt('Sign this change')
+assert.equal((await roleChange).role, 'moderator')
+assert.equal((await rows(`SELECT role FROM users WHERE id = ${otherId}`))[0].role, 'moderator')
+step('a role change: the wallet refused to sign it silently (NEEDS_PROMPT), showed it as text ("user.role … moderator"), signed it once approved; the server applied it')
+
+// ---- 4d. a rotation: the old holder key stops working -------------------------------------------------
+const rotation = await inPage(`${CLIENT}
+  const ch = await api.challenge('signin')
+  const old = await window.BOLT.sign({ kind: 'signin', appPubKey: ch.appKey, payload: ch.data, silent: true })
+  const r = await window.BOLT.sign({ kind: 'rotate', appPubKey: meNow.signing.appKey, payload: '', silent: true })
+  await api.rotate(r.newHolder, r.seq, r.signature)
+  await window.BOLT.sign({ kind: 'confirm', appPubKey: meNow.signing.appKey, payload: '', silent: true })
+  let stale
+  try { await api.signIn(ch.id, old.identity, old.signature); stale = 'accepted' } catch (e) { stale = e.code }
+  const ch2 = await api.challenge('signin')
+  const s = await window.BOLT.sign({ kind: 'signin', appPubKey: ch2.appKey, payload: ch2.data, silent: true })
+  const after = await api.signIn(ch2.id, s.identity, s.signature)
+  return { oldHolder: old.holder, newHolder: r.newHolder, stale, identity: after.identity }`)
+assert.equal(rotation.oldHolder, moved.holder_pubkey)
+assert.notEqual(rotation.newHolder, rotation.oldHolder)
+assert.equal(rotation.stale, 'bad_signature', 'a sign-in signed by the old holder key is refused')
+assert.equal(rotation.identity, me.identity)
+const rotated = await identityRow(me.identity)
+assert.equal(rotated.holder_pubkey, rotation.newHolder)
+assert.ok(rotated.seq > moved.seq)
+step(`rotation: the account moved to holder ${rotation.newHolder.slice(0, 12)}… (seq ${rotated.seq}); a sign-in signed by the old key was refused (bad_signature); the new key signs in`)
+
+// ---- 4e. a recovery: the wallet's key is not the server's any more ----------------------------------
+// The wallet switches to a key the server never heard of (a rotation it never posted), as if the
+// holder key the server knows were lost.
+await inPage(`${CLIENT}
+  await window.BOLT.sign({ kind: 'rotate', appPubKey: meNow.signing.appKey, payload: '', silent: true })
+  await window.BOLT.sign({ kind: 'confirm', appPubKey: meNow.signing.appKey, payload: '', silent: true })
+  return true`)
 await inPage('await fetch("/api/auth/logout", { method: "POST" }); location.reload(); return true').catch(() => {})
 await until('the homepage after signing out', async () => (await screen()) === 'welcome')
 await evaluate(isPage, 'document.getElementById("welcome-signin").click(); true')
 await until('the sign-in button', async () => evaluate(isPage, '!document.getElementById("signin-submit").disabled'))
 await evaluate(isPage, 'document.getElementById("signin-submit").click(); true')
-await until('the sign-in prompt', async () => /Sign in on app\.lab/.test(await promptText().catch(() => '')) || null)
-await clickPrompt('Sign in')
-await until('the workspace again', async () => (await screen()) === 'workspace', 60000)
+await until('the sign-in prompt', () => signPrompt('Sign in'))
+await clickPrompt('Sign')
+await until('"Lost your signing key?"', async () => evaluate(isPage, '!document.getElementById("signin-recover").hidden'))
+await capture(isPage, join(OUT, '4e-lost-key.png')).catch(() => {})
+step('with a holder key the server does not know, the sign-in is refused and the page offers "Lost your signing key?"')
+await evaluate(isPage, 'document.getElementById("signin-recover").click(); true')
+const recoverPrompt = await until('the recovery prompt', () => signPrompt('Recover your account'))
+assert.match(recoverPrompt, /every session there ends/)
+await capture(prompt, join(OUT, '4e-recover-prompt.png')).catch(() => {})
+await clickPrompt('Recover')
+await until('the sign-in prompt after recovering', () => signPrompt('Sign in'))
+await clickPrompt('Sign')
+await until('the workspace after recovering', async () => (await screen()) === 'workspace', 60000)
 assert.equal((await inPage('return (await fetch("/api/me")).json()')).identity, me.identity)
-step('signed out and in again with the same identity: the account is the identity, no password anywhere')
+const recovered = await identityRow(me.identity)
+assert.notEqual(recovered.holder_pubkey, rotation.newHolder)
+assert.ok(recovered.seq > rotated.seq)
+step(`recovery: the issuer key rebound the account to holder ${recovered.holder_pubkey.slice(0, 12)}… (seq ${recovered.seq}) behind Hodos's prompt; signed in again, same identity, no password anywhere`)
 
 // ---- 5. refusals ------------------------------------------------------------------------------------
-const refusals = await inPage(`
-  const post = async (path, body) => { const r = await fetch(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }); return { status: r.status, body: await r.json() } }
-  const ch = await post('/api/auth/challenge', { purpose: 'signin' })
-  const forged = await post('/api/auth/signin', { challenge: ch.body.id, package: ['0100beef00', '0100beef01'] })
-  return { forged }`)
+const refusals = await inPage(`${CLIENT}
+  const code = async (fn) => { try { await fn(); return 'accepted' } catch (e) { return { status: e.status, code: e.code, message: e.message } } }
+  const reg = await api.challenge('register', { name: 'forger-${RUN}' })
+  const forged = await code(() => api.register(reg.id, ['0100beef00', '0100beef01']))
+  const ch = await api.challenge('signin')
+  const noKey = await code(() => api.signIn(ch.id, ${JSON.stringify(me.identity)}, '3006020101020101'))
+  return { forged, noKey }`)
 assert.equal(refusals.forged.status, 401, JSON.stringify(refusals.forged))
-assert.equal(refusals.forged.body.error, 'not_verified')
-step(`a made-up presentation is refused: ${refusals.forged.body.message.slice(0, 90)}`)
+assert.equal(refusals.forged.code, 'not_verified')
+assert.equal(refusals.noKey.code, 'bad_signature', JSON.stringify(refusals.noKey))
+step(`a made-up presentation is refused at registration (${refusals.forged.message.slice(0, 70)}); a signature by no holder key is refused`)
 
-console.log(`\nPASS AuthBOLT registration, sign-in, keep-alive and a signed write on PeerLoop in Hodos (screenshots and logs in ${OUT})`)
+console.log(`\nPASS AuthBOLT registration, holder-key sign-in, auto-rotation, keep-alive, silent and prompted writes, rotation and recovery on PeerLoop in Hodos (screenshots and logs in ${OUT})`)
 stopAll()
 process.exit(0)
