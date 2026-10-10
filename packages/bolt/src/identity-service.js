@@ -9,7 +9,7 @@
 // `call(endpoint, body)` is the transport: it resolves with the wallet's JSON reply and throws on an
 // error reply. Bundled for the Hodos frontend by scripts/bundle-identity.mjs.
 import { brc100Core } from './core.js'
-import { IDENTITY_PROTOCOL, IdentityWallet, decodeAuthData } from './identity.js'
+import { IDENTITY_PROTOCOL, IdentityWallet, decodeAuthData, textFunder } from './identity.js'
 import { WRITE_TIERS } from './write-tiers.js'
 import { walletBroadcaster, walletStore } from './wallet-rail.js'
 
@@ -21,4 +21,4 @@ export function identityService (call) {
   return new IdentityWallet({ core })
 }
 
-export { WRITE_TIERS, decodeAuthData }
+export { WRITE_TIERS, decodeAuthData, textFunder }

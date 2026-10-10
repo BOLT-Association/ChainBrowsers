@@ -54,10 +54,43 @@ export function installBolt ({ walletCall, trustedIssuers = [], target = globalT
     if (isIdentity(opts)) throw new Error(IDENTITY_MINT)
     return handler.mint(opts)
   }
-  api.requestPresentation = (req) => call('/bolt/request', req)
+  // The app pays for moving an identity token (register; rotate and reissue through sign): the page
+  // passes `fund`, which stays here under an id; only the id goes with the request. While the request
+  // is pending, the browser asks for a coin by calling __boltFund(fundId, key, request) on this page,
+  // and the answer goes back through the bridge (POST /bolt/fund-result).
+  const funders = new Map()
+  let nextFund = 0
+  const withFund = async (endpoint, req) => {
+    if (typeof req?.fund !== 'function') return call(endpoint, req)
+    const { fund, ...rest } = req
+    const fundId = `fund${Date.now().toString(36)}${(nextFund++).toString(36)}`
+    funders.set(fundId, fund)
+    try {
+      return await call(endpoint, { ...rest, fundId })
+    } finally {
+      funders.delete(fundId)
+    }
+  }
+  Object.defineProperty(target, '__boltFund', {
+    value: async (fundId, key, request) => {
+      const fund = funders.get(fundId)
+      let answer
+      try {
+        if (!fund) throw new Error('no pending request of this page asked for funding')
+        answer = { key, fundId, coin: await fund(request) }
+      } catch (e) {
+        answer = { key, fundId, error: String(e?.message ?? e) }
+      }
+      await bridge('bolt/fund-result', '/bolt/fund-result', answer)
+    },
+    writable: false,
+    configurable: false
+  })
+  api.requestPresentation = (req) => withFund('/bolt/request', req)
   // Holder-key signatures (POST /bolt/sign, answered natively: silently under the grant, or through
-  // the wallet's prompt). The wallet builds the digest; the page only names the kind and the payload.
-  api.sign = (req) => call('/bolt/sign', req)
+  // the wallet's prompt), and the token's moves the app asks for (rotate, reissue). The wallet builds
+  // the digest or the transactions; the page only names the kind and the payload.
+  api.sign = (req) => withFund('/bolt/sign', req)
   Object.defineProperty(target, 'BOLT', { value: Object.freeze(api), writable: false, configurable: false, enumerable: true })
   return handler
 }

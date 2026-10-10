@@ -220,3 +220,60 @@ test('tokens live in the wallet: a reloaded page (a new realm) still holds and c
   assert.equal(shown.ok, true, shown.reason)
   assert.equal(shown.issuer, identity.issuer)
 })
+
+// The app pays for an identity-token move: the page hands requestPresentation (register) and sign
+// (rotate, reissue) a `fund` callback. Only an id crosses the bridge; while the request is pending,
+// the browser asks the page for a coin by calling window.__boltFund(fundId, key, request), and the
+// page answers through the bridge (POST /bolt/fund-result). Once the request is answered the id is gone.
+test('fund: the page pays for a move through the bridge, by id, only while its request is pending', { skip }, async () => {
+  const asked = []
+  let sandbox
+  const resolvers = []
+  const wallet = {
+    walletCall: async (method, endpoint, args) => {
+      asked.push([method, endpoint, args])
+      if (endpoint === '/bolt/fund-result') return { ok: true }
+      return new Promise((resolve) => { resolvers.push(resolve) })
+    }
+  }
+  sandbox = { console, setTimeout, clearTimeout, TextEncoder, TextDecoder }
+  sandbox.globalThis = sandbox
+  vm.createContext(sandbox)
+  vm.runInContext(bundle, sandbox)
+  sandbox.BoltShim.installBolt({ walletCall: (method, endpoint, args) => wallet.walletCall(method, endpoint, json(args)), target: sandbox })
+  const fundAsked = []
+  const fund = async (req) => { fundAsked.push(req); return { tx: 'beef', vout: 0, unlockingScript: '47' } }
+  const req = { appPubKey: '02' + 'ab'.repeat(32), data: '01' + 'cd'.repeat(69), purpose: 'register', silent: false, fund }
+  const pending = sandbox.BOLT.requestPresentation(req)
+  await new Promise((r) => setImmediate(r))
+  const [method, endpoint, sent] = asked[0]
+  assert.deepEqual([method, endpoint], ['bolt/request', '/bolt/request'])
+  assert.equal(sent.fund, undefined, 'the function itself never crosses the bridge')
+  assert.match(sent.fundId, /^[A-Za-z0-9_-]{8,64}$/)
+  // The browser asks for a coin; the page's fund answers it, through the bridge.
+  await sandbox.__boltFund(sent.fundId, 'bolt-7', { step: 'commit', amount: 321, tx: '0200', index: 1 })
+  assert.deepEqual(fundAsked, [{ step: 'commit', amount: 321, tx: '0200', index: 1 }])
+  assert.deepEqual(asked[1], ['bolt/fund-result', '/bolt/fund-result', { key: 'bolt-7', fundId: sent.fundId, coin: { tx: 'beef', vout: 0, unlockingScript: '47' } }])
+  // A failing fund answers with its error; an unknown id is refused without calling anything.
+  const failing = async () => { throw new Error('the app has no funds') }
+  const p2 = sandbox.BOLT.sign({ kind: 'rotate', appPubKey: req.appPubKey, payload: '05' + 'ee'.repeat(69), silent: true, fund: failing })
+  await new Promise((r) => setImmediate(r))
+  const fundId2 = asked[2][2].fundId
+  await sandbox.__boltFund(fundId2, 'bolt-8', { step: 'settle', amount: 5, tx: '0200', index: 1 })
+  assert.deepEqual(asked[3][2], { key: 'bolt-8', fundId: fundId2, error: 'the app has no funds' })
+  await sandbox.__boltFund('no-such-id', 'bolt-9', { step: 'commit', amount: 5, tx: '00', index: 1 })
+  assert.deepEqual(asked[4][2], { key: 'bolt-9', fundId: 'no-such-id', error: 'no pending request of this page asked for funding' })
+  // Answered: the id is forgotten.
+  resolvers[0]({ package: ['c', 's'] })
+  assert.deepEqual(await pending, { package: ['c', 's'] })
+  await sandbox.__boltFund(sent.fundId, 'bolt-7', { step: 'settle', amount: 5, tx: '00', index: 1 })
+  assert.match(asked.at(-1)[2].error, /no pending request/)
+  resolvers[1]({ package: ['rc', 'rs'] })
+  await p2
+  // A request without fund sends no fundId.
+  const p3 = sandbox.BOLT.sign({ kind: 'signin', appPubKey: req.appPubKey, payload: '02', silent: false })
+  await new Promise((r) => setImmediate(r))
+  assert.equal(asked.at(-1)[2].fundId, undefined)
+  resolvers[2]({ signature: '30' })
+  await p3
+})

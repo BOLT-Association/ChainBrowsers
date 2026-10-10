@@ -30,7 +30,7 @@
 // which the wallet builds itself (signDigest) and never takes from a page.
 //
 // Imports nothing from Node, so it bundles for the browser's trusted UI.
-import { Hash, P2PKH, PrivateKey, Transaction, Utils } from '@bsv/sdk'
+import { Hash, P2PKH, PrivateKey, Transaction, UnlockingScript, Utils } from '@bsv/sdk'
 import { fromBeef, toAtomicBeef } from 'b017'
 import { buildCommit, buildMint, buildSettle, readToken } from './nft.js'
 import { lowSDer, signWith, sizeOf } from './signer.js'
@@ -139,6 +139,29 @@ async function askFunder (funder, step, draft, amount) {
   const sats = coin?.tx?.outputs?.[coin.vout]?.satoshis
   if (sats !== amount || !coin.unlockingScript) throw new Error(`the app's coin for the ${step} must be exactly ${amount} sat and signed`)
   return coin
+}
+
+/**
+ * A funder for IdentityWallet that asks over text, as a browser does (it asks the page, the page asks the
+ * app, the app asks fundd): the draft goes as raw hex, with empty unlocking scripts on the wallet's own
+ * inputs (they are signed after the coin is added); the coin comes back as `{ tx, vout, unlockingScript }`,
+ * the coin's transaction as atomic BEEF hex and fundd's unlocking script in hex.
+ * @param ask `({ step, amount, tx, index }) => Promise<{ tx, vout, unlockingScript }>` (all text)
+ */
+export function textFunder (ask) {
+  return async ({ step, amount, tx, index }) => {
+    const draft = new Transaction(tx.version, tx.inputs.map((i) => ({
+      sourceTXID: i.sourceTXID ?? i.sourceTransaction?.id('hex'),
+      sourceOutputIndex: i.sourceOutputIndex,
+      sequence: i.sequence,
+      unlockingScript: new UnlockingScript()
+    })), tx.outputs, tx.lockTime)
+    const coin = await ask({ step, amount, tx: draft.toHex(), index })
+    if (typeof coin?.tx !== 'string' || typeof coin.unlockingScript !== 'string' || !Number.isInteger(coin.vout)) {
+      throw new Error(`the app gave no coin for the ${step}`)
+    }
+    return { tx: Transaction.fromAtomicBEEF(Utils.toArray(coin.tx, 'hex')), vout: coin.vout, unlockingScript: UnlockingScript.fromHex(coin.unlockingScript) }
+  }
 }
 
 /** A stand-in funding output of the right shape, to measure a transaction before funding it. */

@@ -88,3 +88,25 @@ export function appFunderOn (chain) {
   }
   return { funder, asked, lock }
 }
+
+/**
+ * The app's funding wallet as the browser reaches it, over text (fundd's /coin): the draft arrives as
+ * raw hex (the wallet's own inputs unsigned, empty unlocking scripts), the coin goes back as atomic
+ * BEEF hex and an unlocking script in hex. `asked` keeps what each request carried.
+ */
+export function textFundddOn (chain) {
+  const key = PrivateKey.fromRandom()
+  const lock = new P2PKH().lock(key.toPublicKey().toAddress())
+  const asked = []
+  const ask = async ({ step, amount, tx, index }) => {
+    asked.push({ step, amount, tx, index })
+    const draft = Transaction.fromHex(tx)
+    const coin = chain.mine(lock, amount)
+    const copy = new Transaction(draft.version, [], draft.outputs.map((o) => ({ ...o })), draft.lockTime)
+    for (let i = 0; i < index; i++) copy.addInput({ sourceTXID: '00'.repeat(32), sourceOutputIndex: i, sequence: 0xffffffff })
+    copy.addInput({ sourceTransaction: coin, sourceOutputIndex: 0, sequence: 0xffffffff })
+    const unlockingScript = await new P2PKH().unlock(key, 'single', true).sign(copy, index)
+    return { tx: Utils.toHex(coin.toAtomicBEEF()), vout: 0, unlockingScript: unlockingScript.toHex() }
+  }
+  return { ask, asked, lock }
+}

@@ -4,12 +4,12 @@
 // under the same issuer key. Runs on the pretend chain (harness.mjs), which executes every script.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { Hash, PrivateKey, Utils } from '@bsv/sdk'
+import { Hash, PrivateKey, Transaction, Utils } from '@bsv/sdk'
 import { fromBeef } from 'b017'
 import { BoltHandler, brc100Core, memoryStore } from '../src/index.js'
-import { IDENTITY_PROTOCOL, IdentityWallet, encodeAuthData, signDigest, verifyIdentity } from '../src/identity.js'
+import { IDENTITY_PROTOCOL, IdentityWallet, encodeAuthData, signDigest, textFunder, verifyIdentity } from '../src/identity.js'
 import { readToken } from '../src/nft.js'
-import { appFunderOn, pretendChain, protoWalletOn } from './harness.mjs'
+import { appFunderOn, pretendChain, protoWalletOn, textFundddOn } from './harness.mjs'
 
 const hex = Utils.toHex
 const SITE = 'peerloop.example'
@@ -210,4 +210,27 @@ test('verifyIdentity: a rotation must spend the token\'s recorded outpoint; the 
   assert.match((await verifyIdentity({ handler, package: r.package, appPubKey: app, data })).reason, /outpoint/)
   // Rotate data with a registration package is no rotation.
   assert.equal((await verifyIdentity({ handler, package: shown.package, appPubKey: app, data, outpoint: created.id })).ok, false)
+})
+
+test('textFunder: the app pays over text (as the browser asks the page): the draft goes as hex with empty unlocking scripts, the coin comes back as BEEF', async () => {
+  const chain = pretendChain()
+  const { ids, core } = identityOn(chain)
+  const { ask, asked } = textFundddOn(chain)
+  const app = appKey()
+  const created = await ids.create()
+  const shown = await ids.present({ id: created.id, domain: SITE, appPubKey: app, data: registerData(app), keepSignedIn: true, funder: textFunder(ask) })
+  const [commit, settle] = shown.package.map((b) => fromBeef(b))
+  assert.ok(chain.seen.has(commit.id('hex')) && chain.seen.has(settle.id('hex')), 'both broadcast, the app\'s coins in them')
+  assert.equal(hex(readToken(settle).owner), hex(Hash.hash160(await core.publicKey('authbolt-0.holder.1'))))
+  assert.deepEqual(asked.map((a) => [a.step, a.index]), [['commit', 1], ['settle', 1]])
+  for (const a of asked) {
+    assert.equal(typeof a.tx, 'string')
+    const draft = Transaction.fromHex(a.tx) // it parses: unsigned inputs went with empty unlocking scripts
+    assert.ok(draft.inputs.every((i) => i.unlockingScript.toHex() === ''), 'the wallet sends no signature of its own')
+    assert.equal(draft.inputs.length, a.index, 'the coin is the next input')
+  }
+  // A coin of the wrong amount, or none, is refused before anything is signed.
+  const short = textFunder(async (req) => ask({ ...req, amount: req.amount - 1 }))
+  const other = await identityOn(chain).ids.create()
+  await assert.rejects(identityOn(chain).ids.present({ id: other.id, domain: SITE, appPubKey: app, data: registerData(app), funder: short }), /no identity|exactly/)
 })
