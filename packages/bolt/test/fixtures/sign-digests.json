@@ -1,0 +1,32 @@
+{
+  "source": "computed with Python hashlib, independently of the Go and JS implementations",
+  "rule": "sha256(\"PeerLoop/1\n\" + kind + \"\n\" + appKey(33 bytes) + sha256(payload))",
+  "appPubKey": "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+  "cases": [
+    {
+      "kind": "signin",
+      "payload": "PeerLoop-AuthBOLT/1|signin|https://app.lab:8443|nonce123|1791600000|",
+      "digest": "633e11363e3defb9f7bb587a8bbeae57246614806723f31d22937d1b43ce4fe2"
+    },
+    {
+      "kind": "refresh",
+      "payload": "PeerLoop-AuthBOLT/1|refresh|https://app.lab:8443|nonce456|1791600000|",
+      "digest": "d8351131f32079e4ba5f178f7ecf4045be424b0bc6f404ecf2eaf78c065cc3fb"
+    },
+    {
+      "kind": "write",
+      "payload": "{\"v\":1,\"kind\":\"message.post\",\"target\":\"POST /api/channels/1/messages\",\"body\":{\"text\":\"hi\"},\"at\":1791600000000,\"seq\":1,\"sid\":\"0123456789abcdef0123456789abcdef\"}",
+      "digest": "3bfb0dfc32b9efd252a32654827e0f57097a8fea43f0d32b8490ee10ea5a1191"
+    },
+    {
+      "kind": "rotate",
+      "payload": "{\"issuer\":\"03f0b62055b1865256089fc97ad9f6d74cbf734665f4b06495100722c698971354\",\"newHolder\":\"02aa00000000000000000000000000000000000000000000000000000000000001\",\"seq\":1}",
+      "digest": "9aadbebadfbd2fd94a1d4305bd3d83aec9ace636927623d4a694b317bd7b6b02"
+    },
+    {
+      "kind": "recover",
+      "payload": "{\"issuer\":\"03f0b62055b1865256089fc97ad9f6d74cbf734665f4b06495100722c698971354\",\"newHolder\":\"02aa00000000000000000000000000000000000000000000000000000000000002\",\"seq\":2,\"challenge\":\"nonce789\"}",
+      "digest": "53af67986ea0c98df2aa14283285e4b9d73e5af8e4c844ada82be1501c132de0"
+    }
+  ]
+}

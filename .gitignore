@@ -7,3 +7,8 @@ data/
 .env.local
 browsers/*/
 !browsers/README.md
+tests/cross-wallet/out/
+/b017/
+/p2p/
+/b017-native/
+.claude/*.local.md

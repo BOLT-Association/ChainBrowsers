@@ -54,12 +54,16 @@ export async function spendCoinbase (outputs) {
   const total = outputs.reduce((a, o) => a + o.satoshis, 0)
   for (let k = 0; k < 40; k++) {
     try {
-      const height = tip - 100 - Math.floor(Math.random() * 60)
+      // Recent mature coinbases first; then any mature height. The stack's miner makes a block every
+      // few seconds and regtest halves the subsidy every 150 blocks, so recent coinbases soon hold
+      // less than a test asks for while old ones still hold the full early subsidy.
+      const height = k < 8 ? tip - 100 - Math.floor(Math.random() * 60) : 1 + Math.floor(Math.random() * (tip - 100))
       const block = await rpc('getblock', [await rpc('getblockhash', [height]), 1])
       const cbHex = await rpc('getrawtransaction', [block.tx?.[0] ?? block.merkleroot, 0])
       const source = Transaction.fromHex(cbHex)
       const vout = source.outputs.findIndex(o => o.lockingScript.toHex() === minerScript.toHex())
       if (vout < 0) continue
+      if (source.outputs[vout].satoshis < total) continue // subsidy at this height is too small
       const tx = new Transaction()
       tx.addInput({ sourceTransaction: source, sourceOutputIndex: vout, unlockingScriptTemplate: new P2PKH().unlock(minerKey) })
       for (const o of outputs) tx.addOutput(o)
@@ -82,13 +86,15 @@ export async function spendCoinbase (outputs) {
   throw new Error('no usable coinbase')
 }
 
-/** Mine until Arcade reports the tx MINED with a BUMP; returns Arcade's status object. */
-export async function mineUntilMined (txid) {
-  await until('SEEN_ON_NETWORK', async () => ['SEEN_ON_NETWORK', 'SEEN_ON_MULTIPLE_NODES', 'MINED'].includes((await arcadeStatus(txid)).txStatus), { timeout: 30000 })
-  await sleep(3000)
-  for (let i = 0; i < 6; i++) {
+/** Mine until Arcade reports the tx MINED with a BUMP; returns Arcade's status object.
+ *  `settle` is the pause before the first block (the node cannot be asked whether the tx has reached
+ *  block assembly), `wait` how long a block is given to show the tx before another is mined. */
+export async function mineUntilMined (txid, { settle = 3000, wait = 30000, every = 2000, tries = 6 } = {}) {
+  await until('SEEN_ON_NETWORK', async () => ['SEEN_ON_NETWORK', 'SEEN_ON_MULTIPLE_NODES', 'MINED'].includes((await arcadeStatus(txid)).txStatus), { timeout: 30000, every: Math.min(every, 1000) })
+  await sleep(settle)
+  for (let i = 0; i < tries; i++) {
     await rpc('generate', [1]).catch(() => {})
-    const st = await until('MINED', async () => { const s = await arcadeStatus(txid); return s.txStatus === 'MINED' && s.merklePath ? s : null }, { timeout: 30000, every: 2000 }).catch(() => null)
+    const st = await until('MINED', async () => { const s = await arcadeStatus(txid); return s.txStatus === 'MINED' && s.merklePath ? s : null }, { timeout: wait, every }).catch(() => null)
     if (st) return st
   }
   throw new Error('tx never mined')
