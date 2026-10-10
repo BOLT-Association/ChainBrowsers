@@ -177,7 +177,7 @@ await evaluate(isPage, 'document.getElementById("welcome-register").click(); tru
 await until('the registration form', async () => evaluate(isPage, '!document.getElementById("register-form").hidden'))
 await inPage(`
   const set = (id, v) => { const el = document.getElementById(id); el.value = v; el.dispatchEvent(new Event('input', { bubbles: true })) }
-  set('register-name', ${JSON.stringify(ADMIN)}); set('register-x', '@peerloop_${RUN}')
+  set('register-name', ${JSON.stringify(ADMIN)}) // a name only: the form has no link fields (2026-10-10)
   document.getElementById('register-form').requestSubmit(); return true`)
 const registerPrompt = await until('Hodos\'s identity prompt to register', async () => {
   const t = await promptText().catch(() => '')
@@ -214,9 +214,8 @@ const me = await inPage('return (await fetch("/api/me")).json()')
 assert.equal(me.name, ADMIN)
 assert.equal(me.identity, me0)
 assert.match(me.identity, /^0[23][0-9a-f]{64}$/)
-assert.equal(me.links.x, `peerloop_${RUN}`)
 await capture(isPage, join(OUT, '3-workspace.png')).catch(() => {})
-step(`signed in as ${me.name} with the holder key, identity ${me.identity.slice(0, 12)}…, X @${me.links.x}`)
+step(`signed in as ${me.name} with the holder key, identity ${me.identity.slice(0, 12)}…`)
 
 // The page's own client code, run in the page: the API client and the signer it uses for every change.
 const CLIENT = `
