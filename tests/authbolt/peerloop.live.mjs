@@ -379,6 +379,10 @@ if (due > 0) {
   console.log(`     (waiting ${Math.ceil(due / 1000)} s until p2pd asks for a rotation)`)
   await sleep(due + 1000)
 }
+// The registration's transactions are mined before the rotation (the miner's pace varies: mine by hand
+// if it has not), and the wallet's header chain has the block, so the rotation can carry their proofs.
+for (const txid of registeredRecord.unproven) await mineUntilMined(txid)
+await sleep(5000)
 const fundBeforeRotate = await fundBalance()
 const rotation = await inPage(`${CLIENT}
   const ch = await api.challenge('signin')
@@ -523,7 +527,7 @@ const joinCode = inviteUrl.split('#join=')[1]
 assert.equal(inviteUrl, `https://${NAME}:${PORT}/#join=${joinCode}`)
 await inPage(`document.getElementById('invite').close(); document.getElementById('registrations').close(); return true`)
 // Someone opens the link: a registration with the invite, through Hodos's identity prompt (a new
-// identity for this site), moved on chain with the app paying; it waits for the admin to approve it.
+// identity for this site), moved on chain with the app paying; the invite approves the person at once.
 const GUEST = `guest-${RUN}`
 const invitedReg = inPage(`${CLIENT}
   return auth.authenticate({ api, bolt: window.BOLT, purpose: 'register', form: { name: ${JSON.stringify(GUEST)}, invite: ${JSON.stringify(joinCode)} } })`)
@@ -532,15 +536,24 @@ await until('Hodos\'s identity prompt for the invited registration', async () =>
   return /Create an account on app\.lab/.test(t) && /A new identity for this site/.test(t) ? t : null
 })
 await clickPrompt('Create account')
-assert.deepEqual(await invitedReg, { status: 'pending' })
+assert.deepEqual(await invitedReg, { status: 'approved' })
 const [used] = await rows(`SELECT used_by, used_at FROM registration_invites WHERE code = '${joinCode}'`)
-const [guestReg] = await rows(`SELECT identity FROM registrations WHERE name = '${GUEST}'`)
-assert.ok(used?.used_at > 0 && used.used_by === guestReg?.identity, `the invite is used by the guest's identity (${JSON.stringify(used)})`)
+const [guestUser] = await rows(`SELECT identity, role FROM users WHERE name = '${GUEST}'`)
+assert.equal(guestUser?.role, 'member', `the invited person is a member at once (${JSON.stringify(guestUser)})`)
+assert.equal((await rows(`SELECT id FROM registrations WHERE name = '${GUEST}'`)).length, 0, 'nobody waits for an admin')
+assert.ok(used?.used_at > 0 && used.used_by === guestUser.identity, `the invite is used by the guest's identity (${JSON.stringify(used)})`)
+// The admin's Requests sheet lists the invite with the account that used it and who made it.
+await inPage(`document.getElementById('registrations-open').click(); return true`)
+const listed = await until('the used invite in the invites list', () => evaluate(isPage, `(function () {
+  const li = [...document.querySelectorAll('#invites-list li')].find((l) => l.textContent.includes(${JSON.stringify(GUEST)}))
+  return li ? li.textContent : null })()`))
+assert.match(listed, new RegExp(`invited by ${ADMIN}`))
+await inPage(`document.getElementById('registrations').close(); return true`)
 assert.ok(await fundBalance() < fundBeforeInvite, 'fundd paid for the invited registration')
 const reused = await inPage(`${CLIENT} ${tryCode}
   return code(() => api.challenge('register', { name: 'again-${RUN}', invite: ${JSON.stringify(joinCode)} }))`)
 assert.equal(reused.code, 'invite_used', JSON.stringify(reused))
-step(`registration is by invite: without one it is refused (nothing paid); the admin made a link (a prompted write, "registration-invite.create"), "${GUEST}" registered on chain with it, the app paying, and waits for approval; the link does not work twice`)
+step(`registration is by invite: without one it is refused (nothing paid); the admin made a link (a prompted write, "registration-invite.create"), "${GUEST}" registered on chain with it, the app paying, and is a member at once; the admin's list shows the link used by "${GUEST}", invited by the admin; the link does not work twice`)
 
 // ---- 4h. a restored wallet: the identity's keys from the seed, no record of its token -------------------
 // The wallet loses its record of the admin identity's token, as a wallet restored from its recovery

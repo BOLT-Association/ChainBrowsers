@@ -215,7 +215,8 @@ Two more answers (user, 2026-10-10):
   - This conflicts with p2pd's `-open-signup` (added at the user's request the same morning, the
     demo runs with it): with invite-only registration, open sign-up would apply only to approving
     an invited registration at once. To confirm when step 4 starts. **Resolved (user, 2026-10-10):
-    "Remove open signup"**: the flag is gone and an invited registration waits for an admin
+    "Remove open signup"**: the flag is gone. Then (user, 2026-10-11): "approved straight away and
+    the link made used, linked to the new reg account": an invited registration is approved at once
     ("Follow-ups" below).
 - **Q7. No: "it's a separate wallet".** p2pd keeps no lookup for restored wallets; a person's
   wallet restores its identities from its own records and backups. And the app's funding wallet
@@ -345,8 +346,13 @@ Two more answers (user, 2026-10-10):
   challenge needs an unused invite (403 `invite_required` / `invite_used`); only the `-owner` and
   `-admins` names register without one, while nobody has them. fundd pays one registration per invite
   (per flagged name without one), however many challenges ask, and registering uses the invite up
-  (first, so two registrations on one invite cannot both pass). An invited registration still waits for
-  an admin's approval, as without `-open-signup` before (the user's choice: "Remove open signup").
+  (first, so two registrations on one invite cannot both pass) and **approves the person at once, as a
+  member** (user, 2026-10-11: "Yes approved straight away and the link made used, linked to the new
+  reg account": the admin who sent the link vouched for them). The invite records the identity that
+  used it; `GET /api/admin/registration-invites` lists every invite (used or expired, newest first) with
+  who made it and the account that registered with it, shown in Requests → Invites, so an account can
+  be traced back to the admin who let it in. No registration waits for an admin any more (the queue
+  stays for registrations from before).
   Reissues are paid at most 3 times a day per identity (429 `slow_down`). p2p store table
   `registration_invites`; the page reads `#join=` and opens the registration form.
 - **A restored wallet gets its identity back, by account name.** p2pd keeps each identity's last
