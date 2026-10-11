@@ -41,7 +41,19 @@ export function pretendChain () {
     txs.set(txid, tx)
     return { status: 'accepted' }
   }
-  return { headers, seen, sent, txs, mine, broadcast }
+  /** Mine an already-broadcast tx into a one-tx block of its own; its path is kept for `proofHex`. */
+  const proven = new Map()
+  const prove = (txid) => {
+    if (!seen.has(txid) || proven.has(txid)) return
+    const path = new MerklePath(++height, [[{ offset: 0, hash: txid, txid: true }]])
+    const header = new Array(80).fill(0)
+    header.splice(36, 32, ...Utils.toArray(txid, 'hex').reverse())
+    headers.set(height, Utils.toHex(header))
+    proven.set(txid, path)
+  }
+  /** What an Arcade would answer for a mined tx: its merkle path (BUMP hex), or null while unmined. */
+  const proofHex = async (txid) => proven.get(txid)?.toHex() ?? null
+  return { headers, seen, sent, txs, mine, broadcast, prove, proofHex }
 }
 
 /** A BRC-100 wallet on the pretend chain: the SDK's ProtoWallet keys, headers from the chain, and a

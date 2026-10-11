@@ -19,7 +19,7 @@ const SIGHASH_SINGLE_ANYONECANPAY_FORKID = 0x03 | 0x80 | 0x40
 
 function identityOn (chain) {
   const { wallet, calls } = protoWalletOn(chain)
-  const core = brc100Core({ wallet, broadcast: chain.broadcast, store: memoryStore(), protocolID: IDENTITY_PROTOCOL })
+  const core = brc100Core({ wallet, broadcast: chain.broadcast, store: memoryStore(), protocolID: IDENTITY_PROTOCOL, proof: chain.proofHex })
   return { ids: new IdentityWallet({ core }), core, calls }
 }
 
@@ -281,6 +281,31 @@ test('verifyIdentity: a rotation must spend the token\'s recorded outpoint; the 
   assert.match((await verifyIdentity({ handler, package: r.package, appPubKey: app, data })).reason, /outpoint/)
   // Rotate data with a registration package is no rotation.
   assert.equal((await verifyIdentity({ handler, package: shown.package, appPubKey: app, data, outpoint: created.id })).ok, false)
+})
+
+test('packages stay small: once the history is mined a move carries its proofs, not the whole history (and the app still verifies it)', async () => {
+  const sizes = async (mineBetween) => {
+    const chain = pretendChain()
+    const { ids, app, funder, shown } = await registered(chain)
+    const { wallet } = protoWalletOn(chain)
+    const handler = new BoltHandler({ core: brc100Core({ wallet, broadcast: chain.broadcast }) })
+    let recorded = shown.id
+    const out = []
+    for (let n = 2; n <= 7; n++) {
+      if (mineBetween) for (const txid of chain.seen) chain.prove(txid)
+      const data = rotateData(app, n)
+      const r = await ids.rotate({ domain: SITE, appPubKey: app, data, funder, silent: true })
+      const v = await verifyIdentity({ handler, package: r.package, appPubKey: app, data, outpoint: recorded })
+      assert.equal(v.ok, true, `rotation to holder ${n}: ${v.reason}`)
+      recorded = r.id
+      out.push(r.package.reduce((sum, b) => sum + b.length, 0))
+    }
+    return out
+  }
+  const mined = await sizes(true)
+  assert.ok(Math.max(...mined) <= mined[0] * 1.2, `with the history mined the package stays flat: ${mined.join(', ')}`)
+  const unmined = await sizes(false)
+  assert.ok(unmined.at(-1) > unmined[0] * 2, `unmined, the history grows with each move: ${unmined.join(', ')}`)
 })
 
 test('textFunder: the app pays over text (as the browser asks the page): the draft goes as hex with empty unlocking scripts, the coin comes back as BEEF', async () => {

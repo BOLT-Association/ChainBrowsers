@@ -277,13 +277,22 @@ assert.match(me.identity, /^0[23][0-9a-f]{64}$/)
 const bound = await identityRow(me0)
 assert.match(bound.holder_pubkey, /^0[23][0-9a-f]{64}$/, 'the first signature binds the holder key')
 assert.notEqual(bound.holder_pubkey, me0, 'the holder key is not the issuer key')
+/** The wallet's held AuthBOLT rows (its own token table, read as Hodos itself). */
+const heldRows = async () => (await (await fetch('http://127.0.0.1:31401/boltTokens', {
+  method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ op: 'list', status: 'held', type: 'AuthBOLT' }),
+})).json()).rows ?? []
+/** The BEEF the wallet keeps for identity `issuer`'s token: its size (hex characters), and which of its
+ *  transactions carry a merkle proof and which do not. */
+const record = async (issuer) => {
+  const hex = (await heldRows()).find((r) => r.issuer === issuer)?.beef ?? ''
+  const txs = hex ? Beef.fromString(hex, 'hex').txs : []
+  const isProven = (t) => t.bumpIndex !== undefined || !!t.tx?.merklePath
+  return { size: hex.length, proven: txs.filter(isProven).map((t) => t.txid), unproven: txs.filter((t) => !isProven(t)).map((t) => t.txid) }
+}
 // After the sign-in succeeded the page told the wallet the account name (BOLT.label); the wallet keeps
 // it on this identity's link to this app here (read from the wallet's own token table, as Hodos itself).
 const keptName = await until('the wallet to keep the account name', async () => {
-  const { rows } = await (await fetch('http://127.0.0.1:31401/boltTokens', {
-    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ op: 'list', status: 'held', type: 'AuthBOLT' }),
-  })).json()
-  for (const r of rows ?? []) {
+  for (const r of await heldRows()) {
     const a = typeof r.attributes === 'string' ? JSON.parse(r.attributes) : r.attributes
     const link = a?.wallet?.apps?.find((x) => x.domain === `${NAME}:${PORT}` && x.appPubKey === APP_KEY)
     if (r.issuer === me0 && link?.label) return link.label
@@ -291,6 +300,7 @@ const keptName = await until('the wallet to keep the account name', async () => 
   return null
 }, 20000)
 assert.equal(keptName, ADMIN)
+const registeredRecord = await record(me0)
 step(`the wallet keeps the name the app accepted, "${keptName}", on this identity's link (told after the sign-in succeeded)`)
 await capture(isPage, join(OUT, '3-workspace.png')).catch(() => {})
 step(`signed in as ${me.name}: holder key 1 (${bound.holder_pubkey.slice(0, 12)}…, whose hash the settle pays) signed and is now bound; identity ${me.identity.slice(0, 12)}…`)
@@ -390,6 +400,15 @@ assert.match(rotated.holder_pubkey, /^0[23][0-9a-f]{64}$/, 'the sign-in after th
 assert.notEqual(rotated.holder_pubkey, bound.holder_pubkey)
 const rotSeen = await seenOnChain(rotated.outpoint)
 assert.ok(await fundBalance() < fundBeforeRotate, 'fundd paid for the rotation')
+// The registration was mined before the rotation, so the rotation carries its proof, not its history
+// (before /boltProof every move added its whole unmined history to the next). Unproven are only the
+// rotation's own transactions: its commit and settle and fundd's split for each.
+const rotatedRecord = await record(me.identity)
+const stillUnproven = registeredRecord.unproven.filter((id) => rotatedRecord.unproven.includes(id))
+assert.deepEqual(stillUnproven, [], 'every transaction the registration record held unproven is proven (or gone) in the rotated record')
+assert.ok(rotatedRecord.proven.includes(bound.outpoint.split('.')[0]), 'the registration settle carries its proof')
+assert.ok(rotatedRecord.unproven.length <= 4, `at most the rotation's own 4 transactions are unproven (${rotatedRecord.unproven.length})`)
+console.log(`     (token record: ${registeredRecord.size} hex chars, ${registeredRecord.unproven.length} unproven txs after registering; ${rotatedRecord.size}, ${rotatedRecord.unproven.length} unproven after the rotation)`)
 assert.equal(await signPrompt('Change your signing key'), null, 'no prompt was shown for the rotation (keep me signed in)')
 step(`rotation: once due, the server asked for it and the token moved on chain to holder 2 (settle ${rotated.outpoint.slice(0, 12)}…, ${rotSeen}) silently, fundd paying; a sign-in by the old key was refused (bad_signature); holder key 2 signs in`)
 

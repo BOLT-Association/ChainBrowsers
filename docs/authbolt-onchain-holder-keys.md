@@ -316,6 +316,28 @@ Two more answers (user, 2026-10-10):
    Hodos: the token moved to holder 1 on chain (settle seen by Arcade), holder key bound, owner; the
    wallet labels the identity "fred".
 
+## Follow-ups (2026-10-10/11)
+
+- **The identity last used for an app comes first.** App links carry `lastUsedAt` (set on every link,
+  sign and move); `forApp` lists newest first, so the silent signer and the prompts take the identity
+  last used with that app, not the oldest. packages/bolt `8ca1a68`, Hodos `21d9d803`.
+- **A wallet ahead of the app catches the app up.** A rotation challenge is no longer a 2-minute
+  in-memory entry: it is `HMAC-SHA256(secret, "PeerLoop rotate|" + issuer + "|" + count)` (p2pd flag
+  `-challenge-secret-file`, required with `-rotate-after`), id `rot:<count>`, so the same count gives
+  the same challenge after a restart and a late post is still accepted; `MoveHolder` (seq = count−1)
+  applies a move once. The page asks `POST /api/auth/challenge {purpose:"rotate"}` after signing in with
+  the holder the app named, and the wallet's new sign kind `resume` hands over the move it already made
+  for that challenge (rebuilt from its token record; no signing, no funding). p2p `a088924`, Hodos
+  `915669c5` + `7f3ef280`, ChainBrowsers `da688ea`. Live: the unposted move is posted and the app
+  reaches holder 4. Only one unposted move is covered.
+- **Packages stay small.** Before a move the wallet asks its own `POST /boltProof {txid}` for each
+  unproven transaction in the token's history (Hodos answers only with a BUMP for a MINED tx that its
+  header chain confirms) and attaches the proof, so the move's BEEF stops at the first proven
+  ancestor; fundd does the same for its coin stock from Arcade's `GET /tx` (MINED merkle path).
+  Live: after the rotation every transaction the registration record held unproven is proven, and only
+  the rotation's own commit, settle and fundd's two splits are unproven (a record from before this
+  change carried 14 unproven transactions after a few moves).
+
 ## Related
 
 - The held "most recently used identity" fix (the test is written, the code is not): with several

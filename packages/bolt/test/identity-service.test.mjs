@@ -27,6 +27,10 @@ function walletRails (chain) {
       for (const i of tx.inputs) i.sourceTransaction = chain.txs.get(i.sourceTXID)
       return chain.broadcast(tx)
     },
+    '/boltProof': async ({ txid }) => {
+      const bump = await chain.proofHex(txid)
+      return bump ? { status: 'proven', bump, height: 0 } : { status: 'pending', detail: 'not mined' }
+    },
     '/boltTokens': async ({ op, row, outpoint, wallet }) => {
       if (op === 'put') { if (!rows.has(row.outpoint)) rows.set(row.outpoint, { ...row, status: 'held' }); return { ok: true } }
       if (op === 'get') return { row: rows.get(outpoint) ?? null }
@@ -64,7 +68,7 @@ test('identityService: creates, links and presents an identity through the walle
   const stored = JSON.parse(rails.rows.get(movedId).attributes).wallet
   assert.equal(stored.holderCount, 1, 'the token moved to holder 1 at registration')
   assert.deepEqual(stored.apps.map((a) => [a.domain, a.appPubKey, a.keepSignedIn]), [['peerloop.example', app, true]])
-  assert.deepEqual([...new Set(rails.asked)].sort(), ['/boltBroadcast', '/boltTokens', '/createAction', '/createSignature', '/getPublicKey'])
+  assert.deepEqual([...new Set(rails.asked)].sort(), ['/boltBroadcast', '/boltProof', '/boltTokens', '/createAction', '/createSignature', '/getPublicKey'])
   // Keys are asked under the identity protocol, never the page's BOLT protocol.
   assert.equal((await ids.forApp({ domain: 'peerloop.example', appPubKey: app })).length, 1)
 })

@@ -5,30 +5,21 @@ through an external Arcade. Updated 2026-10-10.
 
 ## Next (in this order)
 
-1. **AuthBOLT: a wallet ahead of the app catches the app up.** Today a wallet whose move never reached
-   the app signs in with the holder the app names, but the app's next rotation (from its recorded,
-   now spent, outpoint) is refused as out of step. Keep each identity's open rotation challenge in
-   p2pd until it is answered or replaced, have the wallet keep the package of its last move per app,
-   and let the page re-post it. (`docs/authbolt-onchain-holder-keys.md`, "Out of step is not lost".)
-2. **AuthBOLT: pick the right identity when several are linked to one app.** The silent signer and
-   the prompts take the oldest linked identity (held red test in
-   `tests/cross-wallet/out/held-mru-test.mjs`). With labels the person can now tell them apart; the
-   silent path should use the one last used for that app.
-3. **Keep move packages small.** Each move carries the token's unmined history (~20 KB more per move;
-   p2pd reads up to ~1 MiB, so about 45 moves). The wallet should replace an ancestor with its proof
-   once mined (Hodos `bolt_tokens` records keep the BEEF from broadcast time), and fundd should refresh
-   its coin stock's merkle paths the same way.
-4. **AuthBOLT: registration invites** (the user's Q6: invite only, once), and per-identity limits on
-   what fundd pays for. The demo runs `-open-signup` until then.
-5. **AuthBOLT: a restored wallet re-imports its identity token.** A wallet restored from its seed can
-   derive every identity and holder key but has no token record. The app holds the last package; it
-   could hand it back (to a signature by the issuer key) for the wallet to verify and keep.
-6. **Hodos spv outage defect** (`docs/issues/hodos-spv-outage-fails-mined-txs.md`): starting the
-   wallet while Arcade is unreachable fails its own mined transactions. Money-path code: needs the
-   owner's decision.
-7. **Testnet / mainnet header rules** in both browsers (checkpoint, difficulty adjustment,
+Done 2026-10-10/11 (`docs/authbolt-onchain-holder-keys.md`, "Follow-ups"): the Hodos spv outage
+defect (spv mode retries an unreachable Arcade, never fails the tx); the identity last used for an
+app comes first; a wallet ahead of the app catches it up (deterministic rotation challenges + the
+`resume` sign kind); move packages carry proofs instead of mined history (wallet `/boltProof`, fundd
+from Arcade).
+
+1. **AuthBOLT: registration invites** (the user's decision: remove `-open-signup`, invite only), and
+   per-identity limits on what fundd pays for.
+2. **AuthBOLT: a restored wallet re-imports its identity token.** A wallet restored from its seed can
+   derive every identity and holder key but has no token record. Restore by account name (the app
+   hands back the last package to a signature by the issuer key), plus a fast path from an identity
+   index (site, key, username) kept in the wallet's backup.
+3. **Testnet / mainnet header rules** in both browsers (checkpoint, difficulty adjustment,
    median-time-past). This is what makes spv mode usable off regtest, and the reason for the work.
-8. **Housekeeping:** refresh the open PR descriptions (ChainBrowsers #3, Hodos #1, bsv-browser #1,
+4. **Housekeeping:** refresh the open PR descriptions (ChainBrowsers #3, Hodos #1, bsv-browser #1,
    b017 #3 and #2); recreate the bsv-browser emulator wallet on the reset chain; verify
    `window-bolt` on a device; macOS build of the Hodos C++ (relay rounds W-07a, W-07b).
 
@@ -57,7 +48,7 @@ through an external Arcade. Updated 2026-10-10.
 - [x] Hodos `HODOS_CHAIN_MODE=spv`: Arcade only, wallet-verified header chain, BEEF proof checks, reorg re-check, push (Arcade SSE) and tip stream, zero-conf (`docs/hodos-spv.md`)
 - [x] bsv-browser `EXPO_PUBLIC_CHAIN_MODE=spv` (fork branch `spv-hardening`, a `patch-package` patch): the same, plus the app running in the Android emulator (`docs/bsv-browser-spv.md`)
 - [x] Cross-wallet e2e: both browsers side by side in spv mode, paying each other (`tests/cross-wallet`, `docs/cross-wallet-e2e.md`)
-- [ ] Testnet / mainnet header rules in both (Next 7)
+- [ ] Testnet / mainnet header rules in both (Next 3)
 - [ ] Hodos: double-spend suspects stay suspected in spv mode (no per-input spent check)
 - [ ] bsv-browser: the toolbox's SSE client does not reconnect by itself (decided 2026-10-04: not worth fixing yet)
 - [ ] A wallet-to-wallet channel that works in spv mode (Hodos refuses PeerPay in spv mode)

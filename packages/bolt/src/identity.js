@@ -30,9 +30,10 @@
 // which the wallet builds itself (signDigest) and never takes from a page.
 //
 // Imports nothing from Node, so it bundles for the browser's trusted UI.
-import { Hash, P2PKH, PrivateKey, Transaction, UnlockingScript, Utils } from '@bsv/sdk'
+import { Hash, MerklePath, P2PKH, PrivateKey, Transaction, UnlockingScript, Utils } from '@bsv/sdk'
 import { fromBeef, toAtomicBeef } from 'b017'
 import { buildCommit, buildMint, buildSettle, readToken } from './nft.js'
+import { provenInHeaders } from './core.js'
 import { lowSDer, signWith, sizeOf } from './signer.js'
 import { WRITE_TIERS } from './write-tiers.js'
 
@@ -436,6 +437,7 @@ export class IdentityWallet {
    * record follows the token.
    */
   async #move (record, { token, n, data, funder }) {
+    await this.#proveHistory(token.tx)
     const wallet = record.attributes.wallet
     const from = wallet.holderKeyId
     const holderKeyId = holderKeyIdOf(wallet.issuerKeyId, n)
@@ -459,6 +461,32 @@ export class IdentityWallet {
     const moved = await this.#keep(settle, 0, 'settle', { ...wallet, apps, holderKeyId, holderCount: n })
     await this.core.store.delete(record.id)
     return { package: [commit, settle].map((tx) => hex(toAtomicBeef(tx))), id: moved.id }
+  }
+
+  /**
+   * Attach a merkle path to each tx of the token's history that is mined by now (`core.proofFor`, and
+   * only a path that proves into the wallet's own headers), walking back from `tx` and stopping at any
+   * proven tx. The next move's BEEF then stops there too (the SDK's Beef leaves out the sources of a tx
+   * that carries a path), so packages stay the size of one move instead of the whole history.
+   */
+  async #proveHistory (tx) {
+    const queue = [tx]
+    const done = new Set()
+    while (queue.length) {
+      const t = queue.shift()
+      const txid = t.id('hex')
+      if (t.merklePath || done.has(txid)) continue
+      done.add(txid)
+      const bump = await this.core.proofFor?.(txid).catch(() => null)
+      if (bump) {
+        try {
+          t.merklePath = MerklePath.fromHex(bump)
+          if (await provenInHeaders(t, this.core.isValidRootForHeight)) continue
+        } catch { /* not a path for this tx: walk on */ }
+        t.merklePath = undefined
+      }
+      for (const input of t.inputs) if (input.sourceTransaction) queue.push(input.sourceTransaction)
+    }
   }
 
   /** The identity a request is for: the one the person chose in the prompt (linked to the app

@@ -17,7 +17,13 @@ export function identityService (call) {
   const wallet = Object.fromEntries(
     ['getPublicKey', 'createSignature', 'getHeaderForHeight', 'createAction'].map((m) => [m, (args) => call('/' + m, args)])
   )
-  const core = brc100Core({ wallet, broadcast: walletBroadcaster(call), store: walletStore(call), protocolID: IDENTITY_PROTOCOL })
+  // A mined tx's merkle path, checked by the wallet against its own headers (POST /boltProof): a token's
+  // next move then carries proofs instead of its whole unmined history.
+  const proof = async (txid) => {
+    const r = await call('/boltProof', { txid })
+    return r?.status === 'proven' && typeof r.bump === 'string' ? r.bump : null
+  }
+  const core = brc100Core({ wallet, broadcast: walletBroadcaster(call), store: walletStore(call), protocolID: IDENTITY_PROTOCOL, proof })
   return new IdentityWallet({ core })
 }
 

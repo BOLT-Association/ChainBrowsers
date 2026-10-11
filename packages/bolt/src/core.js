@@ -91,7 +91,7 @@ const rootOfHeader = (headerHex) => Utils.toHex(Utils.toArray(headerHex, 'hex').
  * @param arcadeUrl  Arcade's API (`:8080` on the local stack); or pass `broadcast`, a
  *                   `(tx) => { status, detail }` that reaches the network another way (wallet-rail.js)
  */
-export function brc100Core ({ wallet, arcadeUrl, broadcast, store = memoryStore(), protocolID = BOLT_PROTOCOL, fetch = globalThis.fetch }) {
+export function brc100Core ({ wallet, arcadeUrl, broadcast, store = memoryStore(), protocolID = BOLT_PROTOCOL, fetch = globalThis.fetch, proof }) {
   const key = (keyID) => ({ protocolID, keyID, counterparty: 'self' })
   const isValidRootForHeight = async (root, height) => {
     const { header } = await wallet.getHeaderForHeight({ height })
@@ -103,6 +103,10 @@ export function brc100Core ({ wallet, arcadeUrl, broadcast, store = memoryStore(
     isValidRootForHeight,
     publicKey: async (keyId) => Utils.toArray((await wallet.getPublicKey(key(keyId))).publicKey, 'hex'),
     signDigest: async (keyId, digest) => (await wallet.createSignature({ ...key(keyId), hashToDirectlySign: digest })).signature,
+    // A mined tx's merkle path (BUMP hex), or null while unmined or unknown: lets a token's next move
+    // carry proofs instead of its whole unmined history. Optional (`proof(txid)`); the caller checks the
+    // path against the headers before using it.
+    proofFor: async (txid) => (proof ? proof(txid) : null),
     // Whatever the broadcaster, a tx already proven by the wallet's headers is not sent again.
     broadcast: async (tx) => (await provenInHeaders(tx, isValidRootForHeight))
       ? { status: 'already-seen', detail: 'mined' }
