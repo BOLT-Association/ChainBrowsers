@@ -542,6 +542,46 @@ const reused = await inPage(`${CLIENT} ${tryCode}
 assert.equal(reused.code, 'invite_used', JSON.stringify(reused))
 step(`registration is by invite: without one it is refused (nothing paid); the admin made a link (a prompted write, "registration-invite.create"), "${GUEST}" registered on chain with it, the app paying, and waits for approval; the link does not work twice`)
 
+// ---- 4h. a restored wallet: the identity's keys from the seed, no record of its token -------------------
+// The wallet loses its record of the admin identity's token, as a wallet restored from its recovery
+// phrase has none: rows deleted from this run's throwaway wallet database (tests/cross-wallet/out/hodos).
+const serverSeq = (await identityRow(me.identity)).seq
+const { DatabaseSync } = await import('node:sqlite')
+const walletDb = new DatabaseSync(join(ROOT, 'tests/cross-wallet/out/hodos/wallet-data/wallet/wallet.db'))
+walletDb.exec('PRAGMA busy_timeout = 5000')
+const dropped = walletDb.prepare('DELETE FROM bolt_tokens WHERE issuer = ? AND type = ?').run(me.identity, 'AuthBOLT').changes
+walletDb.close()
+assert.ok(dropped >= 1, 'the wallet had a record of the identity to lose')
+assert.equal((await heldRows()).filter((r) => r.issuer === me.identity).length, 0, 'the wallet holds no record of it now')
+await inPage('await fetch("/api/auth/logout", { method: "POST" }); location.reload(); return true').catch(() => {})
+await until('the homepage after signing out', async () => (await screen()) === 'welcome')
+await evaluate(isPage, 'document.getElementById("welcome-signin").click(); true')
+await evaluate(isPage, 'document.getElementById("signin-to-restore").click(); true')
+await until('the restore button', async () => evaluate(isPage, '!document.getElementById("restore-form").hidden && !document.getElementById("signin-restore").disabled'))
+await inPage(`
+  const el = document.getElementById('restore-name'); el.value = ${JSON.stringify(ADMIN)}; el.dispatchEvent(new Event('input', { bubbles: true }))
+  document.getElementById('restore-form').requestSubmit(); return true`)
+const restorePrompt = await until('the restore prompt', () => signPrompt('Restore your account'))
+assert.ok(restorePrompt.includes(ADMIN), 'the prompt names the account')
+assert.match(restorePrompt, /Nothing is spent/)
+await capture(prompt, join(OUT, '4h-restore-prompt.png')).catch(() => {})
+await clickPrompt('Restore')
+await until('the sign-in prompt after restoring', () => signPrompt('Sign in'), 120000).catch(async (e) => {
+  console.log(`the page says: ${await evaluate(isPage, 'document.getElementById("signin-error").textContent').catch(() => '?')}`)
+  throw e
+})
+await clickPrompt('Sign')
+await until('the workspace after restoring', async () => (await screen()) === 'workspace', 60000)
+assert.equal((await inPage('return (await fetch("/api/me")).json()')).identity, me.identity)
+const back = (await heldRows()).find((r) => r.issuer === me.identity)
+const backWallet = (typeof back?.attributes === 'string' ? JSON.parse(back.attributes) : back?.attributes)?.wallet
+assert.equal(backWallet?.holderCount, serverSeq, 'the wallet is at the holder the app recorded')
+assert.ok(backWallet.apps.some((a) => a.domain === `${NAME}:${PORT}` && a.label === ADMIN), 'linked to this app under the account name')
+const unknown = await inPage(`${CLIENT} ${tryCode}
+  return code(() => api.challenge('restore', { name: 'nobody-${RUN}' }))`)
+assert.equal(unknown.code, 'no_account', JSON.stringify(unknown))
+step(`a restored wallet: with no record of its token, "Restored your wallet?" and the account name; the identity key signed the app's restore challenge behind Hodos's prompt, the app handed back the token's last move, the wallet kept it (holder ${serverSeq}) and signed in`)
+
 // ---- 5. refusals ------------------------------------------------------------------------------------
 // The forger's invite is a row in this throwaway database: only the presentation is under test.
 const FORGER_INVITE = `forgerinvite${RUN}`
@@ -561,6 +601,6 @@ assert.equal(refusals.forged.code, 'not_verified')
 assert.equal(refusals.noKey.code, 'bad_signature', JSON.stringify(refusals.noKey))
 step(`a made-up presentation is refused at registration (${refusals.forged.message.slice(0, 70)}); a signature by no holder key is refused`)
 
-console.log(`\nPASS AuthBOLT on chain: registration, holder-key sign-in, keep-alive, silent and prompted writes, rotation, recovery, an out-of-step sign-in and an invited registration on PeerLoop in Hodos, the app paying every move (screenshots and logs in ${OUT})`)
+console.log(`\nPASS AuthBOLT on chain: registration, holder-key sign-in, keep-alive, silent and prompted writes, rotation, recovery, an out-of-step sign-in, an invited registration and a restored wallet on PeerLoop in Hodos, the app paying every move (screenshots and logs in ${OUT})`)
 stopAll()
 process.exit(0)

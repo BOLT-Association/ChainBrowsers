@@ -34,6 +34,7 @@ import { Hash, MerklePath, P2PKH, PrivateKey, Transaction, UnlockingScript, Util
 import { fromBeef, toAtomicBeef } from 'b017'
 import { buildCommit, buildMint, buildSettle, readToken } from './nft.js'
 import { provenInHeaders } from './core.js'
+import { BoltHandler } from './handler.js'
 import { lowSDer, signWith, sizeOf } from './signer.js'
 import { WRITE_TIERS } from './write-tiers.js'
 
@@ -43,7 +44,7 @@ export const IDENTITY_PROTOCOL = [2, 'authbolt identity']
 export const AUTH_DATA_BYTES = 66
 /** Register, rotate and reissue also carry the holder count (4 bytes, big-endian, at least 1): 70 bytes. */
 export const COUNTED_AUTH_DATA_BYTES = 70
-const PURPOSES = { register: 1, signin: 2, refresh: 3, write: 4, rotate: 5, reissue: 6 }
+const PURPOSES = { register: 1, signin: 2, refresh: 3, write: 4, rotate: 5, reissue: 6, restore: 7 }
 const COUNTED = ['register', 'rotate', 'reissue']
 const MAX_COUNT = 0xffffffff
 const PURPOSE_OF = Object.fromEntries(Object.entries(PURPOSES).map(([k, v]) => [v, k]))
@@ -95,9 +96,13 @@ export function decodeAuthData (data) {
 }
 
 const SIGN_PREFIX = 'PeerLoop/1\n'
-/** What a holder (or, for recover, the issuer) key signs after registration. */
-export const SIGN_KINDS = ['signin', 'refresh', 'write', 'rotate', 'recover']
+/** What a holder (or, for recover and restore, the issuer) key signs after registration. */
+export const SIGN_KINDS = ['signin', 'refresh', 'write', 'rotate', 'recover', 'restore']
 const MAX_PAYLOAD = 64 * 1024
+/** How many counted identity keys (`authbolt-<i>`) a restored wallet derives to find an app's issuer key. */
+const MAX_IDENTITIES = 50
+/** How long an approved restore signature lets the wallet keep the package the app answers with. */
+const RESTORE_GRANT_MS = 10 * 60 * 1000
 
 /** The digest a holder signature covers (32 bytes): the kind and the app key are bound in, and the
  *  prefix keeps it apart from any transaction sighash (a double SHA-256 of a preimage). */
@@ -185,6 +190,8 @@ export class IdentityWallet {
   }
 
   #lastStamp = 0
+  /** Restores the person approved: `domain|app|issuer` -> until when `restore` may keep the app's package. */
+  #restoreGrants = new Map()
   /** A clock that never repeats: two uses in the same millisecond still have an order. */
   #now () {
     this.#lastStamp = Math.max(Date.now(), this.#lastStamp + 1)
@@ -304,7 +311,7 @@ export class IdentityWallet {
    * signatures (sign); rotate and reissue move the token on chain (the payload is the app's auth
    * data, `funder` the app's coins). The page learns signatures, public keys and the package.
    */
-  async answer ({ id, domain, appPubKey, kind, payload, silent, funder, count, holder }) {
+  async answer ({ id, domain, appPubKey, kind, payload, silent, funder, count, holder, issuer }) {
     switch (kind) {
       case 'signin': case 'refresh': case 'write':
         return this.sign({ id, domain, appPubKey, kind, payload, silent, count, holder })
@@ -314,8 +321,10 @@ export class IdentityWallet {
         return this.reissue({ id, domain, appPubKey, data: payload, funder, silent })
       case 'resume':
         return this.resume({ id, domain, appPubKey, data: payload, silent })
+      case 'restore':
+        return this.restoreSign({ domain, appPubKey, issuer, payload, silent })
       default:
-        throw new Error(`unknown kind ${kind}: signin, refresh, write, rotate or reissue`)
+        throw new Error(`unknown kind ${kind}: signin, refresh, write, rotate, reissue, resume or restore`)
     }
   }
 
@@ -367,6 +376,60 @@ export class IdentityWallet {
     return { package: [commit, settle].map((tx) => hex(toAtomicBeef(tx))) }
   }
 
+  /**
+   * A wallet restored from its seed asks the app for its identity's token: sign the app's restore
+   * challenge with the identity's issuer key (`authbolt-<i>`, found by deriving the counted keys).
+   * Never silent: approving it also lets `restore` keep the package the app answers with, for a few
+   * minutes. NOT_HELD when the seed derives no such identity.
+   * @returns `{ identity, signature }`: the issuer key and DER hex
+   */
+  async restoreSign ({ domain, appPubKey, issuer, payload, silent }) {
+    if (silent) throw needsPrompt('the wallet always asks before restoring an identity')
+    const { app } = this.#readFor(appPubKey, payload, 'restore', 'only restore data asks for an identity\'s token')
+    if (typeof domain !== 'string' || !domain) throw new Error('a restore needs the site it is for')
+    const keyId = await this.#issuerKeyId(issuer)
+    if ((await this.identities()).some((t) => t.issuer === keyId.issuer)) throw new Error('this wallet already holds that identity: sign in instead')
+    const { signature } = await this.#signAs(keyId.id, { kind: 'restore', appPubKey: app, payload })
+    this.#restoreGrants.set(`${domain}|${app}|${keyId.issuer}`, Date.now() + RESTORE_GRANT_MS)
+    return { identity: keyId.issuer, signature }
+  }
+
+  /**
+   * Keep the token the app handed back after `restoreSign`: the package of the identity's last move
+   * with this app, and its holder count. Kept only if the person approved the restore signature for
+   * this app and identity, the move was made for this app, and its settle pays this identity's holder
+   * key `count` (derived from the seed); the package is checked as a registration would be. Linked to
+   * the app under the name it knows (keep-signed-in off: the person chooses again).
+   * @returns the identity, as `identities()` lists it
+   */
+  async restore ({ domain, appPubKey, issuer, package: pkg, count, name }) {
+    const app = checkAppKey(appPubKey)
+    const grant = `${domain}|${app}|${String(issuer).toLowerCase()}`
+    if (!(this.#restoreGrants.get(grant) > Date.now())) throw new Error('the person did not approve restoring this identity for this app')
+    if (!Array.isArray(pkg) || pkg.length < 2 || !pkg.every((x) => typeof x === 'string')) throw new Error('a package is the move\'s transactions (hex)')
+    if (!Number.isInteger(count) || count < 1) throw new Error('the holder count must be at least 1')
+    const keyId = await this.#issuerKeyId(issuer)
+    if ((await this.identities()).some((t) => t.issuer === keyId.issuer)) throw new Error('this wallet already holds that identity')
+    const settle = fromBeef(pkg[pkg.length - 1])
+    const vout = settle.outputs.findIndex((_, v) => readToken(settle, v)?.type === 'AuthBOLT')
+    const token = vout >= 0 ? readToken(settle, vout) : null
+    if (!token || hex(token.issuer) !== keyId.issuer) throw new Error('the package holds another identity\'s token')
+    let moved
+    try { moved = decodeAuthData(hex(settle.inputs[0]?.sourceTransaction?.inputs[0]?.unlockingScript?.chunks[0]?.data ?? [])) } catch { moved = null }
+    if (moved?.appPubKey !== app) throw new Error('the package\'s move was made for another app')
+    const holderKeyId = holderKeyIdOf(keyId.id, count)
+    if (hex(token.owner) !== hex(Hash.hash160(await this.core.publicKey(holderKeyId)))) throw new Error(`the token is not held by this identity's holder ${count}`)
+    const checked = await new BoltHandler({ core: this.core }).verify(pkg, { issuer: keyId.issuer })
+    if (!checked.ok) throw new Error(`the package does not check out: ${checked.reason}`)
+    this.#restoreGrants.delete(grant)
+    const now = this.#now()
+    const label = typeof name === 'string' && name.trim() && [...name.trim()].length <= 64 ? { label: name.trim() } : {}
+    const record = await this.#keep(settle, vout, 'settle', { // the token stands on the move's settle
+      issuerKeyId: keyId.id, holderKeyId, holderCount: count, apps: [{ domain, appPubKey: app, keepSignedIn: false, linkedAt: now, lastUsedAt: now, ...label }]
+    })
+    return this.#view(record)
+  }
+
   /** Turn the keep-signed-in grant for one app on or off. */
   async setKeepSignedIn ({ id, domain, appPubKey, keep }) {
     const record = await this.#record(id)
@@ -411,6 +474,15 @@ export class IdentityWallet {
   #checkCount (record, count) {
     const next = (record.attributes.wallet.holderCount ?? 0) + 1
     if (count !== next) throw new Error(`the app asks for holder ${count}, but this identity's next holder is ${next}: the counts are out of step`)
+  }
+
+  /** The counted identity key whose public key is `issuer`, as a restored wallet finds it: `{ id, issuer }`. */
+  async #issuerKeyId (issuer) {
+    const want = String(issuer).toLowerCase()
+    for (let i = 0; i < MAX_IDENTITIES; i++) {
+      if (hex(await this.core.publicKey(`authbolt-${i}`)) === want) return { id: `authbolt-${i}`, issuer: want }
+    }
+    throw Object.assign(new Error('this wallet does not hold that identity'), { code: 'NOT_HELD' })
   }
 
   /** The next counted identity key: one past the highest `authbolt-<i>` this wallet has used. */

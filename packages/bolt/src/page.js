@@ -23,6 +23,10 @@ export const PAGE_METHODS = {
   // The name the app accepted for an identity linked to it (after a successful sign-in): the wallet
   // keeps it to show in its prompts instead of a key. Never asks; the name is the app's text.
   label: { asks: false },
+  // The token a restored wallet's identity holds, as the app handed it back: kept only after the person
+  // approved the restore signature (sign kind 'restore') for this app and identity, and only if the
+  // seed derives the token's keys. Never asks again.
+  restore: { asks: false },
   transfer: { asks: true },
   pay: { asks: true },
   melt: { asks: true },

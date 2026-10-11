@@ -9,8 +9,8 @@ import { appFunderOn, pretendChain } from './harness.mjs'
 
 const json = (x) => JSON.parse(JSON.stringify(x))
 
-function walletRails (chain) {
-  const proto = new ProtoWallet(PrivateKey.fromRandom())
+function walletRails (chain, key = PrivateKey.fromRandom()) {
+  const proto = new ProtoWallet(key)
   const rows = new Map()
   const asked = []
   const endpoints = {
@@ -32,7 +32,12 @@ function walletRails (chain) {
       return bump ? { status: 'proven', bump, height: 0 } : { status: 'pending', detail: 'not mined' }
     },
     '/boltTokens': async ({ op, row, outpoint, wallet }) => {
-      if (op === 'put') { if (!rows.has(row.outpoint)) rows.set(row.outpoint, { ...row, status: 'held' }); return { ok: true } }
+      if (op === 'put') {
+        // Hodos's own rule (rust-wallet bolt.rs): a token record stands on a mint or a settle.
+        if (row.anchor_kind != null && !['mint', 'settle'].includes(row.anchor_kind)) return { error: 'anchor_kind must be mint or settle' }
+        if (!rows.has(row.outpoint)) rows.set(row.outpoint, { ...row, status: 'held' })
+        return { ok: true }
+      }
       if (op === 'get') return { row: rows.get(outpoint) ?? null }
       if (op === 'list') return { rows: [...rows.values()].filter((r) => r.status === 'held') }
       if (op === 'spend') { const r = rows.get(outpoint); if (r) r.status = 'spent'; return { ok: true } }
@@ -71,4 +76,23 @@ test('identityService: creates, links and presents an identity through the walle
   assert.deepEqual([...new Set(rails.asked)].sort(), ['/boltBroadcast', '/boltProof', '/boltTokens', '/createAction', '/createSignature', '/getPublicKey'])
   // Keys are asked under the identity protocol, never the page's BOLT protocol.
   assert.equal((await ids.forApp({ domain: 'peerloop.example', appPubKey: app })).length, 1)
+})
+
+test('identityService: a restored wallet keeps the app\'s package through the wallet rails (a record Hodos takes)', async () => {
+  const chain = pretendChain()
+  const root = PrivateKey.fromRandom()
+  const ids = identityService(walletRails(chain, root).call)
+  const app = PrivateKey.fromRandom().toPublicKey().toString()
+  const created = await ids.create()
+  const data = encodeAuthData({ purpose: 'register', appPubKey: app, challengeHash: 'cd'.repeat(32), count: 1 })
+  const { funder } = appFunderOn(chain)
+  const { package: pkg } = await ids.present({ id: created.id, domain: 'peerloop.example', appPubKey: app, data, keepSignedIn: true, funder })
+  const fresh = walletRails(chain, root)
+  const restored = identityService(fresh.call)
+  const restore = encodeAuthData({ purpose: 'restore', appPubKey: app, challengeHash: 'ef'.repeat(32) })
+  await restored.answer({ domain: 'peerloop.example', appPubKey: app, kind: 'restore', payload: restore, issuer: created.issuer, silent: false })
+  await restored.restore({ domain: 'peerloop.example', appPubKey: app, issuer: created.issuer, package: pkg, count: 1, name: 'fred' })
+  const [row] = [...fresh.rows.values()]
+  assert.equal(row.anchor_kind, 'settle')
+  assert.equal(JSON.parse(row.attributes).wallet.holderCount, 1)
 })

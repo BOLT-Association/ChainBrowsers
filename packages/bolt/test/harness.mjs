@@ -58,8 +58,9 @@ export function pretendChain () {
 
 /** A BRC-100 wallet on the pretend chain: the SDK's ProtoWallet keys, headers from the chain, and a
  *  createAction that mines the output asked for. `calls` logs the methods used. */
-export function protoWalletOn (chain) {
-  const proto = new ProtoWallet(PrivateKey.fromRandom())
+/** A BRC-100 wallet on the pretend chain; `key` is its root key (the same key: the same wallet, restored). */
+export function protoWalletOn (chain, key = PrivateKey.fromRandom()) {
+  const proto = new ProtoWallet(key)
   const calls = []
   const wallet = {
     getPublicKey: (args) => { calls.push('getPublicKey'); return proto.getPublicKey(args) },

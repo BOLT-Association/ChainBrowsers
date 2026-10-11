@@ -151,6 +151,15 @@ test('sign rides the bridge to the wallet (/bolt/sign), which signs with the hol
   await assert.rejects(page({ walletCall: async () => ({ error: 'BOLT: NEEDS_PROMPT' }) }).sign(req), /NEEDS_PROMPT/)
 })
 
+test('restore rides the bridge to the wallet (/bolt/restore): the token the app handed back after an approved restore signature', { skip }, async () => {
+  const asked = []
+  const wallet = { walletCall: async (method, endpoint, args) => { asked.push([method, endpoint, args]); return { identity: '03' + 'cd'.repeat(32), holderCount: 2 } } }
+  const req = { appPubKey: '02' + 'ab'.repeat(32), issuer: '03' + 'cd'.repeat(32), package: ['0100beef', '0100cafe'], count: 2, name: 'fred' }
+  assert.deepEqual(await page(wallet).restore(req), { identity: '03' + 'cd'.repeat(32), holderCount: 2 })
+  assert.deepEqual(asked, [['bolt/restore', '/bolt/restore', req]])
+  await assert.rejects(page({ walletCall: async () => ({ error: 'BOLT: the person did not approve restoring this identity' }) }).restore(req), /did not approve/)
+})
+
 test('label rides the bridge to the wallet (/bolt/label): the name the app accepted for this identity', { skip }, async () => {
   const asked = []
   const wallet = { walletCall: async (method, endpoint, args) => { asked.push([method, endpoint, args]); return { ok: true } } }

@@ -94,6 +94,9 @@ export function installBolt ({ walletCall, trustedIssuers = [], target = globalT
   // The name the app accepted for an identity (reported after a successful sign-in): the wallet keeps it
   // on that identity's link to this site, to show instead of a key (POST /bolt/label, never prompted).
   api.label = (req) => call('/bolt/label', req)
+  // A restored wallet's identity: the token the app handed back after the person approved the restore
+  // signature (POST /bolt/restore, never prompted: the wallet keeps it only after that approval).
+  api.restore = (req) => call('/bolt/restore', req)
   Object.defineProperty(target, 'BOLT', { value: Object.freeze(api), writable: false, configurable: false, enumerable: true })
   return handler
 }

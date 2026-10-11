@@ -349,6 +349,19 @@ Two more answers (user, 2026-10-10):
   an admin's approval, as without `-open-signup` before (the user's choice: "Remove open signup").
   Reissues are paid at most 3 times a day per identity (429 `slow_down`). p2p store table
   `registration_invites`; the page reads `#join=` and opens the registration form.
+- **A restored wallet gets its identity back, by account name.** p2pd keeps each identity's last
+  move (`identities.last_package`, on register, rotate and reissue). On the sign-in screen,
+  "Restored your wallet? Get your account back" asks for the account name; `POST /api/auth/challenge
+  {purpose: "restore", name}` answers a restore challenge (tag 07, 66 bytes) naming the account's
+  identity; the wallet signs it with that identity's issuer key behind Hodos's prompt ("Restore your
+  account", sign kind `restore`; the wallet finds `authbolt-<i>` by deriving its first 50 counted keys);
+  `POST /api/auth/restore {challenge, identity, signature}` answers the package and holder count; the
+  page hands them to the wallet (`BOLT.restore`, Hodos `POST /bolt/restore`, never prompted), which keeps
+  the token only after that approval (10 minutes, once), only if the move was made for this app (so one
+  site cannot link a person's identity at another) and only if its settle pays the identity's holder
+  key at that count; then a sign-in. **Not built yet:** the fast path (an identity index of site, key and
+  account name in Hodos's wallet backup, so the page need not ask for the name): it changes Hodos's
+  backup payload, which waits for the owner's decision.
 
 ## Related
 

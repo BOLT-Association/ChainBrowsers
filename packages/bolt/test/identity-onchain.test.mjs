@@ -4,7 +4,7 @@
 // under the same issuer key. Runs on the pretend chain (harness.mjs), which executes every script.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { Hash, PrivateKey, Transaction, Utils } from '@bsv/sdk'
+import { BigNumber, ECDSA, Hash, PrivateKey, PublicKey, Signature, Transaction, Utils } from '@bsv/sdk'
 import { fromBeef } from 'b017'
 import { BoltHandler, brc100Core, memoryStore } from '../src/index.js'
 import { IDENTITY_PROTOCOL, IdentityWallet, encodeAuthData, signDigest, textFunder, verifyIdentity } from '../src/identity.js'
@@ -17,8 +17,8 @@ const appKey = () => PrivateKey.fromRandom().toPublicKey().toString()
 const challenge = (text = 'nonce') => hex(Hash.sha256(Utils.toArray(text, 'utf8')))
 const SIGHASH_SINGLE_ANYONECANPAY_FORKID = 0x03 | 0x80 | 0x40
 
-function identityOn (chain) {
-  const { wallet, calls } = protoWalletOn(chain)
+function identityOn (chain, key) {
+  const { wallet, calls } = protoWalletOn(chain, key)
   const core = brc100Core({ wallet, broadcast: chain.broadcast, store: memoryStore(), protocolID: IDENTITY_PROTOCOL, proof: chain.proofHex })
   return { ids: new IdentityWallet({ core }), core, calls }
 }
@@ -27,8 +27,8 @@ const registerData = (app, count = 1, text = 'register') => encodeAuthData({ pur
 const rotateData = (app, count, text = 'rotate') => encodeAuthData({ purpose: 'rotate', appPubKey: app, challengeHash: challenge(text + count), count })
 const reissueData = (app, count, text = 'reissue') => encodeAuthData({ purpose: 'reissue', appPubKey: app, challengeHash: challenge(text + count), count })
 
-async function registered (chain, { keep = true } = {}) {
-  const w = identityOn(chain)
+async function registered (chain, { keep = true, key } = {}) {
+  const w = identityOn(chain, key)
   const f = appFunderOn(chain)
   const app = appKey()
   const created = await w.ids.create()
@@ -329,4 +329,90 @@ test('textFunder: the app pays over text (as the browser asks the page): the dra
   const short = textFunder(async (req) => ask({ ...req, amount: req.amount - 1 }))
   const other = await identityOn(chain).ids.create()
   await assert.rejects(identityOn(chain).ids.present({ id: other.id, domain: SITE, appPubKey: app, data: registerData(app), funder: short }), /no identity|exactly/)
+})
+
+const restoreData = (app, text = 'restore') => encodeAuthData({ purpose: 'restore', appPubKey: app, challengeHash: challenge(text) })
+
+test('restore: a wallet restored from its seed signs for its identity with the issuer key, then keeps the app\'s package once it proves the token is its own', async () => {
+  const chain = pretendChain()
+  const root = PrivateKey.fromRandom()
+  const { app, created, shown } = await registered(chain, { key: root })
+  const fresh = identityOn(chain, root) // the same seed, no records
+  assert.deepEqual(await fresh.ids.identities(), [])
+  const data = restoreData(app)
+  await assert.rejects(fresh.ids.answer({ domain: SITE, appPubKey: app, kind: 'restore', payload: data, issuer: created.issuer, silent: true }), (e) => e.code === 'NEEDS_PROMPT')
+  const s = await fresh.ids.answer({ domain: SITE, appPubKey: app, kind: 'restore', payload: data, issuer: created.issuer, silent: false })
+  assert.equal(s.identity, created.issuer)
+  const digest = signDigest({ kind: 'restore', appPubKey: app, payload: data })
+  assert.ok(ECDSA.verify(new BigNumber(digest), Signature.fromDER(Utils.toArray(s.signature, 'hex')), PublicKey.fromString(created.issuer)), 'signed by the issuer key over the restore digest')
+  const restored = await fresh.ids.restore({ domain: SITE, appPubKey: app, issuer: created.issuer, package: shown.package, count: 1, name: 'fred' })
+  assert.equal(restored.issuer, created.issuer)
+  assert.equal(restored.holderCount, 1)
+  assert.equal(restored.holderKeyId, 'authbolt-0.holder.1')
+  const [linked] = await fresh.ids.forApp({ domain: SITE, appPubKey: app })
+  assert.equal(linked.id, shown.id, 'the token the app last saw')
+  assert.equal(linked.apps[0].label, 'fred')
+  assert.equal(linked.apps[0].keepSignedIn, false, 'the person chooses again')
+  // It signs in as holder 1, and a new identity takes the next key, not the restored one's.
+  const signin = await fresh.ids.sign({ id: linked.id, domain: SITE, appPubKey: app, kind: 'signin', payload: 'hello' })
+  assert.equal(signin.holder, hex(await fresh.core.publicKey('authbolt-0.holder.1')))
+  assert.equal((await fresh.ids.create()).keyId, 'authbolt-1')
+})
+
+test('restore: refused without the person\'s approval, for another app\'s package, a wrong count, or an identity the seed does not derive', async () => {
+  const chain = pretendChain()
+  const root = PrivateKey.fromRandom()
+  const { app, created, shown } = await registered(chain, { key: root })
+  const fresh = identityOn(chain, root)
+  const keep = (over = {}) => fresh.ids.restore({ domain: SITE, appPubKey: app, issuer: created.issuer, package: shown.package, count: 1, name: 'fred', ...over })
+  await assert.rejects(keep(), /approve/, 'no restore signature was approved for it')
+  await fresh.ids.answer({ domain: SITE, appPubKey: app, kind: 'restore', payload: restoreData(app), issuer: created.issuer, silent: false })
+  const other = appKey()
+  await assert.rejects(keep({ appPubKey: other }), /approve/, 'approved for another app')
+  await assert.rejects(keep({ count: 2 }), /holder 2/)
+  const grant = () => fresh.ids.answer({ domain: SITE, appPubKey: app, kind: 'restore', payload: restoreData(app), issuer: created.issuer, silent: false })
+  await grant()
+  const elsewhere = await registered(chain) // another person's identity at another app
+  await assert.rejects(keep({ package: elsewhere.shown.package }), /another identity/)
+  // Another app (approved for itself) handing over this identity's move with the first app: it would
+  // link the person's identity at one site to another.
+  const other2 = appKey()
+  await fresh.ids.answer({ domain: 'other.example', appPubKey: other2, kind: 'restore', payload: restoreData(other2), issuer: created.issuer, silent: false })
+  await assert.rejects(keep({ domain: 'other.example', appPubKey: other2 }), /another app/)
+  const stranger = identityOn(chain) // another seed
+  await assert.rejects(stranger.ids.answer({ domain: SITE, appPubKey: app, kind: 'restore', payload: restoreData(app), issuer: created.issuer, silent: false }),
+    (e) => e.code === 'NOT_HELD')
+  await grant()
+  await keep()
+  await assert.rejects(keep(), /approve/, 'one approval keeps one package')
+  await assert.rejects(grant(), /already holds/)
+})
+
+test('restore: the app\'s last package is a rotation whose history is mined (proofs, not the history)', async () => {
+  const chain = pretendChain()
+  const root = PrivateKey.fromRandom()
+  const { ids, app, funder, created } = await registered(chain, { key: root })
+  let last
+  for (let n = 2; n <= 3; n++) {
+    for (const txid of chain.seen) chain.prove(txid)
+    last = await ids.rotate({ domain: SITE, appPubKey: app, data: rotateData(app, n), funder, silent: true })
+  }
+  for (const txid of chain.seen) chain.prove(txid) // the last move mined too, as by the time a wallet is restored
+  const fresh = identityOn(chain, root)
+  await fresh.ids.answer({ domain: SITE, appPubKey: app, kind: 'restore', payload: restoreData(app), issuer: created.issuer, silent: false })
+  const restored = await fresh.ids.restore({ domain: SITE, appPubKey: app, issuer: created.issuer, package: last.package, count: 3, name: 'fred' })
+  assert.equal(restored.holderCount, 3)
+  assert.equal(restored.id, last.id)
+})
+
+test('restore: the app\'s last package carries earlier moves still unmined when it was made', async () => {
+  const chain = pretendChain()
+  const root = PrivateKey.fromRandom()
+  const { ids, app, funder, created } = await registered(chain, { key: root })
+  let last
+  for (let n = 2; n <= 3; n++) last = await ids.rotate({ domain: SITE, appPubKey: app, data: rotateData(app, n), funder, silent: true })
+  const fresh = identityOn(chain, root)
+  await fresh.ids.answer({ domain: SITE, appPubKey: app, kind: 'restore', payload: restoreData(app), issuer: created.issuer, silent: false })
+  const restored = await fresh.ids.restore({ domain: SITE, appPubKey: app, issuer: created.issuer, package: last.package, count: 3, name: 'fred' })
+  assert.equal(restored.holderCount, 3)
 })

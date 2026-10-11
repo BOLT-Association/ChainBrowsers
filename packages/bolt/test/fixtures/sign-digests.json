@@ -27,6 +27,11 @@
       "kind": "recover",
       "payload": "{\"issuer\":\"03f0b62055b1865256089fc97ad9f6d74cbf734665f4b06495100722c698971354\",\"newHolder\":\"02aa00000000000000000000000000000000000000000000000000000000000002\",\"seq\":2,\"challenge\":\"nonce789\"}",
       "digest": "53af67986ea0c98df2aa14283285e4b9d73e5af8e4c844ada82be1501c132de0"
+    },
+    {
+      "kind": "restore",
+      "payload": "070279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f817985f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f",
+      "digest": "6e81fc4568094703c796af3a795a1f86475ad71780006a19c94f501897e631b3"
     }
   ]
 }
