@@ -502,10 +502,56 @@ const proof2 = await inPage(`return (await fetch('/api/messages/${sent2.id}/proo
 assert.equal(proof2.holder, inStep.holder_pubkey, 'the wallet signs with holder 4 again')
 step('out of step: the wallet had moved to holder 4 unposted; the sign-in was refused, the server named holder 3, the wallet signed with it silently, then handed over the move the server never received (deterministic rotation challenge) and signed in as holder 4 (one click in all); a message afterwards is signed by holder 4')
 
+// ---- 4g. registration is by invite: the admin makes one (a prompted write), it pays one registration ----
+const tryCode = `const code = async (fn) => { try { await fn(); return 'accepted' } catch (e) { return { status: e.status, code: e.code, message: e.message } } }`
+const fundBeforeInvite = await fundBalance()
+const uninvited = await inPage(`${CLIENT} ${tryCode}
+  return code(() => api.challenge('register', { name: 'stranger-${RUN}' }))`)
+assert.equal(uninvited.code, 'invite_required', JSON.stringify(uninvited))
+assert.equal(await fundBalance(), fundBeforeInvite, 'nothing was paid for an uninvited registration')
+await inPage(`
+  document.getElementById('registrations-open').click()
+  await new Promise((r) => setTimeout(r, 300))
+  document.getElementById('reg-invite').click(); return true`)
+const invitePrompt = await until('the prompt for the invite', () => signPrompt('Approve a change'))
+assert.match(invitePrompt, /registration-invite\.create/)
+await clickPrompt('Sign this change')
+const inviteUrl = await until('the invite link', () => evaluate(isPage, `(function () {
+  const d = document.getElementById('invite'); const t = document.getElementById('invite-link').textContent
+  return d.open && t.includes('#join=') ? t : null })()`))
+const joinCode = inviteUrl.split('#join=')[1]
+assert.equal(inviteUrl, `https://${NAME}:${PORT}/#join=${joinCode}`)
+await inPage(`document.getElementById('invite').close(); document.getElementById('registrations').close(); return true`)
+// Someone opens the link: a registration with the invite, through Hodos's identity prompt (a new
+// identity for this site), moved on chain with the app paying; it waits for the admin to approve it.
+const GUEST = `guest-${RUN}`
+const invitedReg = inPage(`${CLIENT}
+  return auth.authenticate({ api, bolt: window.BOLT, purpose: 'register', form: { name: ${JSON.stringify(GUEST)}, invite: ${JSON.stringify(joinCode)} } })`)
+await until('Hodos\'s identity prompt for the invited registration', async () => {
+  const t = await promptText().catch(() => '')
+  return /Create an account on app\.lab/.test(t) && /A new identity for this site/.test(t) ? t : null
+})
+await clickPrompt('Create account')
+assert.deepEqual(await invitedReg, { status: 'pending' })
+const [used] = await rows(`SELECT used_by, used_at FROM registration_invites WHERE code = '${joinCode}'`)
+const [guestReg] = await rows(`SELECT identity FROM registrations WHERE name = '${GUEST}'`)
+assert.ok(used?.used_at > 0 && used.used_by === guestReg?.identity, `the invite is used by the guest's identity (${JSON.stringify(used)})`)
+assert.ok(await fundBalance() < fundBeforeInvite, 'fundd paid for the invited registration')
+const reused = await inPage(`${CLIENT} ${tryCode}
+  return code(() => api.challenge('register', { name: 'again-${RUN}', invite: ${JSON.stringify(joinCode)} }))`)
+assert.equal(reused.code, 'invite_used', JSON.stringify(reused))
+step(`registration is by invite: without one it is refused (nothing paid); the admin made a link (a prompted write, "registration-invite.create"), "${GUEST}" registered on chain with it, the app paying, and waits for approval; the link does not work twice`)
+
 // ---- 5. refusals ------------------------------------------------------------------------------------
+// The forger's invite is a row in this throwaway database: only the presentation is under test.
+const FORGER_INVITE = `forgerinvite${RUN}`
+await fetch(`http://127.0.0.1:${RQLITE_PORT}/db/execute`, {
+  method: 'POST', headers: { 'content-type': 'application/json' },
+  body: JSON.stringify([[`INSERT INTO registration_invites (code, created_by, created_at, expires_at) VALUES (?, 1, ?, ?)`, FORGER_INVITE, Date.now(), Date.now() + 3600e3]]),
+})
 const refusals = await inPage(`${CLIENT}
   const code = async (fn) => { try { await fn(); return 'accepted' } catch (e) { return { status: e.status, code: e.code, message: e.message } } }
-  const reg = await api.challenge('register', { name: 'forger-${RUN}' })
+  const reg = await api.challenge('register', { name: 'forger-${RUN}', invite: ${JSON.stringify(FORGER_INVITE)} })
   const forged = await code(() => api.register(reg.id, ['0100beef00', '0100beef01']))
   const ch = await api.challenge('signin')
   const noKey = await code(() => api.signIn(ch.id, ${JSON.stringify(me.identity)}, '3006020101020101'))
@@ -515,6 +561,6 @@ assert.equal(refusals.forged.code, 'not_verified')
 assert.equal(refusals.noKey.code, 'bad_signature', JSON.stringify(refusals.noKey))
 step(`a made-up presentation is refused at registration (${refusals.forged.message.slice(0, 70)}); a signature by no holder key is refused`)
 
-console.log(`\nPASS AuthBOLT on chain: registration, holder-key sign-in, keep-alive, silent and prompted writes, rotation, recovery and an out-of-step sign-in on PeerLoop in Hodos, the app paying every move (screenshots and logs in ${OUT})`)
+console.log(`\nPASS AuthBOLT on chain: registration, holder-key sign-in, keep-alive, silent and prompted writes, rotation, recovery, an out-of-step sign-in and an invited registration on PeerLoop in Hodos, the app paying every move (screenshots and logs in ${OUT})`)
 stopAll()
 process.exit(0)

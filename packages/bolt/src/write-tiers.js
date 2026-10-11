@@ -26,6 +26,7 @@ export const WRITE_TIERS = Object.freeze({
   'push.unsubscribe': 'silent',
   'reaction.add': 'silent',
   'reaction.remove': 'silent',
+  'registration-invite.create': 'prompted',
   'registration.decide': 'prompted',
   'unblock': 'prompted',
   'unpin': 'silent',

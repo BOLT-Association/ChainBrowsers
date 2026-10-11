@@ -9,17 +9,16 @@ Done 2026-10-10/11 (`docs/authbolt-onchain-holder-keys.md`, "Follow-ups"): the H
 defect (spv mode retries an unreachable Arcade, never fails the tx); the identity last used for an
 app comes first; a wallet ahead of the app catches it up (deterministic rotation challenges + the
 `resume` sign kind); move packages carry proofs instead of mined history (wallet `/boltProof`, fundd
-from Arcade).
+from Arcade); registration by invite only (`-open-signup` removed; fundd pays one registration per
+invite, at most 3 reissues per identity a day).
 
-1. **AuthBOLT: registration invites** (the user's decision: remove `-open-signup`, invite only), and
-   per-identity limits on what fundd pays for.
-2. **AuthBOLT: a restored wallet re-imports its identity token.** A wallet restored from its seed can
+1. **AuthBOLT: a restored wallet re-imports its identity token.** A wallet restored from its seed can
    derive every identity and holder key but has no token record. Restore by account name (the app
    hands back the last package to a signature by the issuer key), plus a fast path from an identity
    index (site, key, username) kept in the wallet's backup.
-3. **Testnet / mainnet header rules** in both browsers (checkpoint, difficulty adjustment,
+2. **Testnet / mainnet header rules** in both browsers (checkpoint, difficulty adjustment,
    median-time-past). This is what makes spv mode usable off regtest, and the reason for the work.
-4. **Housekeeping:** refresh the open PR descriptions (ChainBrowsers #3, Hodos #1, bsv-browser #1,
+3. **Housekeeping:** refresh the open PR descriptions (ChainBrowsers #3, Hodos #1, bsv-browser #1,
    b017 #3 and #2); recreate the bsv-browser emulator wallet on the reset chain; verify
    `window-bolt` on a device; macOS build of the Hodos C++ (relay rounds W-07a, W-07b).
 
@@ -48,7 +47,7 @@ from Arcade).
 - [x] Hodos `HODOS_CHAIN_MODE=spv`: Arcade only, wallet-verified header chain, BEEF proof checks, reorg re-check, push (Arcade SSE) and tip stream, zero-conf (`docs/hodos-spv.md`)
 - [x] bsv-browser `EXPO_PUBLIC_CHAIN_MODE=spv` (fork branch `spv-hardening`, a `patch-package` patch): the same, plus the app running in the Android emulator (`docs/bsv-browser-spv.md`)
 - [x] Cross-wallet e2e: both browsers side by side in spv mode, paying each other (`tests/cross-wallet`, `docs/cross-wallet-e2e.md`)
-- [ ] Testnet / mainnet header rules in both (Next 3)
+- [ ] Testnet / mainnet header rules in both (Next 2)
 - [ ] Hodos: double-spend suspects stay suspected in spv mode (no per-input spent check)
 - [ ] bsv-browser: the toolbox's SSE client does not reconnect by itself (decided 2026-10-04: not worth fixing yet)
 - [ ] A wallet-to-wallet channel that works in spv mode (Hodos refuses PeerPay in spv mode)

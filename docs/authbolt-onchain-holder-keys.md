@@ -214,7 +214,9 @@ Two more answers (user, 2026-10-10):
     A page cannot ask for a rotation (or a fee coin) by itself.
   - This conflicts with p2pd's `-open-signup` (added at the user's request the same morning, the
     demo runs with it): with invite-only registration, open sign-up would apply only to approving
-    an invited registration at once. To confirm when step 4 starts.
+    an invited registration at once. To confirm when step 4 starts. **Resolved (user, 2026-10-10):
+    "Remove open signup"**: the flag is gone and an invited registration waits for an admin
+    ("Follow-ups" below).
 - **Q7. No: "it's a separate wallet".** p2pd keeps no lookup for restored wallets; a person's
   wallet restores its identities from its own records and backups. And the app's funding wallet
   is a **separate wallet**, not part of p2pd (my reading of the same answer): p2pd asks it for a
@@ -337,6 +339,16 @@ Two more answers (user, 2026-10-10):
   Live: after the rotation every transaction the registration record held unproven is proven, and only
   the rotation's own commit, settle and fundd's two splits are unproven (a record from before this
   change carried 14 unproven transactions after a few moves).
+- **Registration by invite only (Q6); `-open-signup` removed.** An admin makes a link
+  (`POST /api/admin/registration-invites`, a prompted signed write `registration-invite.create`;
+  Requests → "Make an invite link"), `<origin>/#join=<code>`, one registration, for a week. The register
+  challenge needs an unused invite (403 `invite_required` / `invite_used`); only the `-owner` and
+  `-admins` names register without one, while nobody has them. fundd pays one registration per invite
+  (per flagged name without one), however many challenges ask, and registering uses the invite up
+  (first, so two registrations on one invite cannot both pass). An invited registration still waits for
+  an admin's approval, as without `-open-signup` before (the user's choice: "Remove open signup").
+  Reissues are paid at most 3 times a day per identity (429 `slow_down`). p2p store table
+  `registration_invites`; the page reads `#join=` and opens the registration form.
 
 ## Related
 
