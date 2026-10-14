@@ -54,10 +54,11 @@ export async function spendCoinbase (outputs) {
   const total = outputs.reduce((a, o) => a + o.satoshis, 0)
   for (let k = 0; k < 40; k++) {
     try {
-      // Recent mature coinbases first; then any mature height. The stack's miner makes a block every
-      // few seconds and regtest halves the subsidy every 150 blocks, so recent coinbases soon hold
-      // less than a test asks for while old ones still hold the full early subsidy.
-      const height = k < 8 ? tip - 100 - Math.floor(Math.random() * 60) : 1 + Math.floor(Math.random() * (tip - 100))
+      // Coinbase maturity is 1 on the stack (spv-testnet's patched Teranode), so every mined coinbase is
+      // spendable. Recent ones first (earlier runs are less likely to have spent them); then any height,
+      // because the stack's miner makes a block every few seconds and regtest halves the subsidy every
+      // 150 blocks, so recent coinbases soon hold less than a test asks for while old ones still do.
+      const height = k < 8 ? Math.max(1, tip - Math.floor(Math.random() * 60)) : 1 + Math.floor(Math.random() * tip)
       const block = await rpc('getblock', [await rpc('getblockhash', [height]), 1])
       const cbHex = await rpc('getrawtransaction', [block.tx?.[0] ?? block.merkleroot, 0])
       const source = Transaction.fromHex(cbHex)
