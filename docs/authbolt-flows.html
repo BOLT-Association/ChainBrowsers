@@ -1,0 +1,389 @@
+<title>AuthBOLT Sign-in Flows</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,500..900&family=Source+Sans+3:ital,wght@0,400;0,600;0,700;1,400&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* Layout: a single reading column; sequence diagrams break out wider, with four lifelines (page, Hodos, app server, verifier & chain). */
+:root {
+  --bg: #f3f4f1;
+  --panel: #ffffff;
+  --ink: #17202b;
+  --muted: #5b6672;
+  --rule: #d5d9d4;
+  --bolt: #c27a00;
+  --bolt-soft: #fbefd6;
+  --page: #2d62b0;
+  --hodos: #c27a00;
+  --server: #1f7a5c;
+  --chain: #6b4fa8;
+  --code-bg: #e9ebe6;
+  --danger: #a8402c;
+  --display: "Archivo", "Arial Narrow", system-ui, sans-serif;
+  --body: "Source Sans 3", "Segoe UI", system-ui, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #12161b; --panel: #1a2027; --ink: #e6e9ec; --muted: #9aa5b0; --rule: #2f3740;
+    --bolt: #f0b33c; --bolt-soft: #3a2f17; --page: #7aa7ea; --hodos: #f0b33c; --server: #5cc49c;
+    --chain: #b19cea; --code-bg: #232a32; --danger: #ef8a72; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #12161b; --panel: #1a2027; --ink: #e6e9ec; --muted: #9aa5b0; --rule: #2f3740;
+  --bolt: #f0b33c; --bolt-soft: #3a2f17; --page: #7aa7ea; --hodos: #f0b33c; --server: #5cc49c;
+  --chain: #b19cea; --code-bg: #232a32; --danger: #ef8a72; color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--ink); font: 17px/1.6 var(--body); padding-inline: 20px; padding-block: 0 64px; }
+.wrap { max-width: 1040px; margin: 0 auto; }
+.read { max-width: 68ch; }
+h1, h2, h3 { font-family: var(--display); text-wrap: balance; margin: 0; line-height: 1.1; }
+h1 { font-size: clamp(2.3rem, 6vw, 4rem); font-weight: 850; font-stretch: 118%; letter-spacing: -0.01em; }
+h2 { font-size: 1.75rem; font-weight: 800; font-stretch: 112%; }
+h3 { font-size: 1.1rem; font-weight: 700; font-stretch: 105%; }
+p { margin: 0; }
+code { font: 0.86em var(--mono); background: var(--code-bg); padding: 0.08em 0.35em; border-radius: 4px; overflow-wrap: anywhere; }
+a { color: var(--page); }
+.eyebrow { font: 600 0.72rem var(--mono); letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); }
+section { display: grid; gap: 18px; padding-block: 44px 8px; border-top: 1px solid var(--rule); }
+section:first-of-type { border-top: 0; }
+
+/* hero */
+header.hero { display: grid; gap: 20px; padding-block: 56px 36px; }
+.hero .lede { font-size: 1.2rem; max-width: 60ch; }
+.hero .mark { display: inline-flex; align-items: center; gap: 10px; }
+.bolt-glyph { width: 30px; height: 30px; }
+.facts { display: flex; flex-wrap: wrap; gap: 8px; }
+.fact { font: 600 0.8rem var(--mono); padding: 5px 10px; border: 1px solid var(--rule); border-radius: 999px; background: var(--panel); }
+
+/* cast */
+.cast { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; }
+.actor { background: var(--panel); border: 1px solid var(--rule); border-top: 4px solid var(--c); border-radius: 6px; padding: 16px; display: grid; gap: 6px; align-content: start; min-width: 0; }
+.actor h3 { color: var(--c); }
+.actor p { font-size: 0.95rem; color: var(--muted); }
+.c-page { --c: var(--page); } .c-hodos { --c: var(--hodos); } .c-server { --c: var(--server); } .c-chain { --c: var(--chain); }
+
+/* auth data strip */
+.bytes { display: flex; width: 100%; border-radius: 6px; overflow: hidden; border: 1px solid var(--rule); font-family: var(--mono); }
+.bytes > div { padding: 12px 10px; display: grid; gap: 2px; min-width: 0; }
+.bytes .n { font-size: 0.72rem; color: var(--muted); }
+.bytes .v { font-size: 0.86rem; font-weight: 600; overflow-wrap: anywhere; }
+.b-tag { flex: 1 0 74px; background: var(--bolt-soft); }
+.b-app { flex: 33 1 0; background: var(--panel); border-left: 1px solid var(--rule); }
+.b-hash { flex: 32 1 0; background: var(--code-bg); border-left: 1px solid var(--rule); }
+.tags { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; }
+.tagrow { display: flex; gap: 10px; align-items: baseline; }
+.tagrow b { font: 600 0.95rem var(--mono); color: var(--bolt); }
+pre.stmt { margin: 0; font: 0.85rem/1.5 var(--mono); background: var(--code-bg); padding: 14px 16px; border-radius: 6px; overflow-x: auto; }
+
+/* sequence diagrams */
+.seq-scroll { overflow-x: auto; background: var(--panel); border: 1px solid var(--rule); border-radius: 8px; }
+.seq { min-width: 760px; padding: 0 12px 14px; }
+.lanes-head, .row { display: grid; grid-template-columns: 2.2rem 1fr; }
+.lanes-head { position: sticky; top: 0; background: var(--panel); z-index: 1; border-bottom: 1px solid var(--rule); }
+.lanes { display: grid; grid-template-columns: repeat(4, 1fr); position: relative; }
+.lanes-head .lanes > div { text-align: center; padding: 12px 6px 10px; font: 700 0.86rem var(--display); font-stretch: 108%; color: var(--c); }
+.lanes-head .lanes > div span { display: block; font: 400 0.72rem var(--body); color: var(--muted); font-stretch: 100%; }
+.row .lanes {
+  background-image: linear-gradient(var(--rule), var(--rule)), linear-gradient(var(--rule), var(--rule)), linear-gradient(var(--rule), var(--rule)), linear-gradient(var(--rule), var(--rule));
+  background-size: 1px 100%; background-repeat: no-repeat;
+  background-position: 12.5% 0, 37.5% 0, 62.5% 0, 87.5% 0;
+  padding-block: 7px;
+}
+.num { font: 600 0.75rem var(--mono); color: var(--muted); padding-top: 12px; text-align: right; padding-right: 10px; }
+.msg { position: relative; margin-inline: calc(50% / var(--n)); padding: 0 6px 10px; text-align: center; font-size: 0.86rem; line-height: 1.35; align-self: end; }
+.msg::before { content: ""; position: absolute; left: 0; right: 0; bottom: 3px; height: 2px; background: var(--c); }
+.msg::after { content: ""; position: absolute; bottom: -1px; width: 0; height: 0; border-top: 5px solid transparent; border-bottom: 5px solid transparent; }
+.msg.ltr::after { right: -2px; border-left: 9px solid var(--c); }
+.msg.rtl::after { left: -2px; border-right: 9px solid var(--c); }
+.msg.opt::before { background: repeating-linear-gradient(90deg, var(--c) 0 6px, transparent 6px 10px); }
+.act { margin-inline: 4px; background: var(--panel); border: 1px solid var(--c); border-left-width: 4px; border-radius: 4px; padding: 6px 9px; font-size: 0.84rem; line-height: 1.35; position: relative; z-index: 0; }
+.msg code, .act code { font-size: 0.8em; }
+.note { color: var(--muted); font-style: italic; }
+.flow-intro { display: grid; gap: 10px; }
+.callout { border-left: 4px solid var(--bolt); background: var(--bolt-soft); padding: 12px 16px; border-radius: 0 6px 6px 0; }
+.callout.stop { border-left-color: var(--danger); }
+
+/* lists and tables */
+ul.checks { list-style: none; padding: 0; margin: 0; display: grid; gap: 10px; }
+ul.checks li { display: grid; grid-template-columns: 1.6rem 1fr; gap: 6px; }
+ul.checks li::before { content: "\2713"; color: var(--server); font-weight: 700; }
+ul.guard li::before { content: "\2715"; color: var(--danger); }
+.two { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 28px; }
+.two > div { display: grid; gap: 12px; align-content: start; min-width: 0; }
+.table-scroll { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: 0.95rem; }
+th, td { text-align: left; padding: 9px 12px 9px 0; border-bottom: 1px solid var(--rule); vertical-align: top; }
+th { font: 600 0.72rem var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+td.v { font-family: var(--mono); font-size: 0.88rem; white-space: nowrap; font-variant-numeric: tabular-nums; }
+ul.plain { margin: 0; padding-left: 1.2em; display: grid; gap: 6px; }
+footer { margin-top: 48px; padding-top: 18px; border-top: 1px solid var(--rule); color: var(--muted); font-size: 0.9rem; display: grid; gap: 6px; }
+@media (max-width: 560px) { body { font-size: 16px; padding-inline: 16px; } h2 { font-size: 1.45rem; } }
+</style>
+
+<div class="wrap">
+  <header class="hero">
+    <div class="mark">
+      <svg class="bolt-glyph" viewBox="0 0 24 24" aria-hidden="true"><path d="M13.5 1 4 13.5h6.2L8.8 23 20 9.6h-6.4L13.5 1Z" fill="var(--bolt)"/></svg>
+      <span class="eyebrow">BOLT Association · Hodos · PeerLoop</span>
+    </div>
+    <h1>AuthBOLT sign-in</h1>
+    <p class="lede">A person signs up for a site without a password. Their wallet holds an identity token they issued themselves, and shows it to the site when they approve. The site checks the proof against the chain and remembers the token's issuer key as the account.</p>
+    <div class="facts">
+      <span class="fact">no passwords</span>
+      <span class="fact">one key per identity</span>
+      <span class="fact">presentations are never broadcast</span>
+      <span class="fact">verified live 2026-10-07, regtest</span>
+    </div>
+  </header>
+
+  <section id="model">
+    <span class="eyebrow">The model</span>
+    <h2>Users issue, apps verify</h2>
+    <div class="read" style="display:grid;gap:14px">
+      <p>An AuthBOLT is a BOLT token (b017) of type AuthBOLT. The person mints it with their own wallet, so the person is the issuer. A site never sees a list of trusted issuers. It learns the issuer key when the person registers and recognises it from then on.</p>
+      <p>Each new identity gets a new key. A person can use one identity everywhere or mint one per site, and two sites cannot link identities that use different keys. The token moves only to the person's own keys: the holder key can rotate, but the issuer key never changes, so it is the account's identity at the site.</p>
+      <p>To prove they hold the identity, the wallet makes a <b>presentation</b>: an unfunded commit and settle transaction that carries up to 75 bytes of data. It is a self-transfer: the token goes back to the person's own key. The site's app key travels inside the auth data, which the presentation signs over. Nobody broadcasts it. The site's server checks it and throws it away.</p>
+    </div>
+  </section>
+
+  <section id="cast">
+    <span class="eyebrow">Who takes part</span>
+    <h2>Four parties, one prompt</h2>
+    <div class="cast">
+      <div class="actor c-page"><h3>The page</h3><p>PeerLoop in a Hodos tab. It asks for a presentation through <code>window.BOLT</code>, which Hodos injects into external https pages only. It cannot mint or present.</p></div>
+      <div class="actor c-hodos"><h3>Hodos</h3><p>The browser shell holds the page's request and opens Hodos's own prompt. The Rust wallet derives the identity keys and signs. The person decides here.</p></div>
+      <div class="actor c-server"><h3>App server</h3><p>PeerLoop's <code>p2pd</code>. It issues single-use challenges, keeps accounts keyed by issuer key, and runs short sessions.</p></div>
+      <div class="actor c-chain"><h3>Verifier and chain</h3><p>The <code>bolt-verify</code> sidecar runs b017's verifier. It asks Arcade only whether an anchor was seen, and asks p2pd's own verified header chain whether a merkle root is real.</p></div>
+    </div>
+  </section>
+
+  <section id="data">
+    <span class="eyebrow">What a presentation carries</span>
+    <h2>66 bytes of auth data</h2>
+    <p class="read">The server builds the data. The page passes it on unchanged. The wallet reads the first two fields to word its prompt, and refuses data that names a different app from the one asking.</p>
+    <div class="bytes" role="img" aria-label="Auth data: 1 byte tag, 33 byte app public key, 32 byte challenge hash">
+      <div class="b-tag"><span class="n">1 byte</span><span class="v">tag</span></div>
+      <div class="b-app"><span class="n">33 bytes</span><span class="v">app public key (compressed)</span></div>
+      <div class="b-hash"><span class="n">32 bytes</span><span class="v">SHA-256 of the challenge statement</span></div>
+    </div>
+    <div class="tags">
+      <div class="tagrow"><b>0x01</b><span>register</span></div>
+      <div class="tagrow"><b>0x02</b><span>sign in</span></div>
+      <div class="tagrow"><b>0x03</b><span>keep a session alive</span></div>
+    </div>
+    <p class="read">The statement the server hashes names the purpose, the site's origin, a random nonce, the expiry and, for a registration, the form the person filled in:</p>
+    <pre class="stmt">PeerLoop-AuthBOLT/1|register|https://app.lab:8443|&lt;24-byte random nonce&gt;|&lt;expiry, unix seconds&gt;|{"name":"…","links":{…}}</pre>
+  </section>
+
+  <section id="onchain">
+    <span class="eyebrow">What reaches the chain</span>
+    <h2>Three kinds of transaction</h2>
+    <p class="read">A presentation package is <code>[anchor, commit, settle]</code>. The anchor is the token transaction the package stands on: the mint for an identity that has never moved, or the last settle that went on chain after a rotation.</p>
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>Transaction</th><th>Who broadcasts it</th><th>What it does</th></tr></thead>
+        <tbody>
+          <tr><td><b>Mint</b></td><td>The wallet, once, when the person creates the identity</td><td>Creates the 1-sat AuthBOLT under a fresh key. Funded.</td></tr>
+          <tr><td><b>Anchor resend</b></td><td>The verifier, on every check</td><td>Sends the anchor to Arcade again. Arcade answers “already seen”, which shows the token's history is real. A resend changes nothing. A mined anchor whose merkle path matches p2pd's header chain is not resent.</td></tr>
+          <tr><td><b>Commit and settle</b></td><td>Nobody</td><td>The presentation itself: a self-transfer back to the holder's own key, carrying the 66 bytes. It is unfunded and creates value, so no node would accept it. The verifier runs its scripts off chain and throws it away. The token stays with the person.</td></tr>
+          <tr><td><b>Rotation</b></td><td>The wallet, when the person rotates</td><td>A self-transfer to a new holder key: a funded commit and settle, both broadcast. The issuer key does not change. This is a separate action, not part of signing in.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="register">
+    <span class="eyebrow">Flow 1 · tag 0x01</span>
+    <h2>Registration</h2>
+    <div class="flow-intro read">
+      <p>The person fills in a username and, optionally, an email, X handle or LinkedIn profile. The form is hashed into the challenge, so the proof covers exactly what they submitted.</p>
+    </div>
+    <div class="seq-scroll"><div class="seq" data-flow="register"></div></div>
+    <div class="callout read"><p>The optional links are only what the identity's holder chose to submit. Proving them needs its own step: an email link, or OAuth or a posted code for X and LinkedIn.</p></div>
+  </section>
+
+  <section id="signin">
+    <span class="eyebrow">Flow 2 · tag 0x02</span>
+    <h2>Sign in</h2>
+    <p class="read">The same exchange without the form. The server accepts a presentation whose issuer key matches an account, whatever holder key the token has now.</p>
+    <div class="seq-scroll"><div class="seq" data-flow="signin"></div></div>
+  </section>
+
+  <section id="keepalive">
+    <span class="eyebrow">Flow 3 · tag 0x03</span>
+    <h2>Keep-alive</h2>
+    <p class="read">A session lasts 30 minutes. While the person stays on the site, the page renews it every 10 minutes with a fresh presentation. If the person ticked "Keep me signed in", Hodos answers without showing anything.</p>
+    <div class="seq-scroll"><div class="seq" data-flow="refresh"></div></div>
+    <div class="callout stop read"><p><b>When the wallet would have to ask</b>, it answers <code>NEEDS_PROMPT</code> instead of opening a window. The page stops its keep-alives and the session ends at its expiry. Nothing waits on the person. A network error is different: the page tries again at the next tick.</p></div>
+  </section>
+
+  <section id="checks">
+    <span class="eyebrow">Why the site can trust it</span>
+    <h2>What gets checked</h2>
+    <div class="two">
+      <div>
+        <h3 style="color:var(--chain)">The verifier, on every presentation</h3>
+        <ul class="checks">
+          <li><span>The package holds an AuthBOLT, and b017 verifies it with the issuer key the token names.</span></li>
+          <li><span>The token's anchor was seen by the network (Arcade), and every merkle root is in p2pd's own verified header chain.</span></li>
+          <li><span>It is a presentation, not a mint or a transfer.</span></li>
+          <li><span>Its data equals this challenge's 66 bytes exactly.</span></li>
+          <li><span>The data names this site's app key, so the package cannot be replayed to another site.</span></li>
+          <li><span>It is a self-transfer: the settle pays the same key the commit spent from. A package that moves the token to anyone else is refused.</span></li>
+        </ul>
+      </div>
+      <div>
+        <h3 style="color:var(--server)">The app server, before it acts</h3>
+        <ul class="checks">
+          <li><span>The challenge exists, has not expired (2 minutes) and was not used. It is consumed on first use, whatever the verdict.</span></li>
+          <li><span>The verified purpose matches the route: register, sign in or refresh.</span></li>
+          <li><span>Registration: no other account has this issuer key.</span></li>
+          <li><span>Keep-alive: the challenge was asked for by this session, and the issuer key is this account's.</span></li>
+        </ul>
+      </div>
+    </div>
+    <div class="read callout"><p><b>Nobody takes a server's word about the chain.</b> Hodos runs in spv mode and keeps only headers that pass its own checks. p2pd does the same with the same rules: layout, proof of work, linkage, pinned genesis, most work wins. Both take candidate headers from Arcade's chaintracks and wake on its tip stream.</p></div>
+  </section>
+
+  <section id="guards">
+    <span class="eyebrow">What a site cannot do</span>
+    <h2>The person stays in control</h2>
+    <ul class="checks guard read">
+      <li><span><b>Mint or present.</b> A page can only request a presentation. Minting and presenting happen in Hodos's own prompt, which the page cannot script.</span></li>
+      <li><span><b>See other identities.</b> <code>BOLT.list()</code> returns only identities already linked to this site and app. A site cannot write to an identity record.</span></li>
+      <li><span><b>Use the identity keys.</b> The wallet refuses the keys' protocol, <code>authbolt identity</code>, to every site, for signing and for <code>getPublicKey</code>.</span></li>
+      <li><span><b>Claim to be another site.</b> Hodos stamps the requesting domain itself. The page's word is not used.</span></li>
+      <li><span><b>Answer the prompt.</b> Only Hodos's approval overlay may send the answer. A tab that navigates to the prompt page is refused.</span></li>
+      <li><span><b>Keep a session alive unasked.</b> A silent presentation needs the person's earlier "Keep me signed in" for that app on that site, and only ever carries keep-alive data.</span></li>
+    </ul>
+  </section>
+
+  <section id="numbers">
+    <span class="eyebrow">Timings and costs</span>
+    <h2>The numbers</h2>
+    <div class="two">
+      <div class="table-scroll">
+        <table>
+          <thead><tr><th>Limit</th><th>Value</th></tr></thead>
+          <tbody>
+            <tr><td>Challenge lifetime</td><td class="v">2 min</td></tr>
+            <tr><td>Session after sign-in or keep-alive</td><td class="v">30 min</td></tr>
+            <tr><td>Keep-alive interval</td><td class="v">10 min</td></tr>
+            <tr><td>Prompt left unanswered</td><td class="v">5 min</td></tr>
+            <tr><td>Silent keep-alive in the wallet</td><td class="v">20 s</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="table-scroll">
+        <table>
+          <thead><tr><th>Action</th><th>Network cost</th></tr></thead>
+          <tbody>
+            <tr><td>Create an identity (mint)</td><td>one funded transaction: a 1-sat output plus the miner fee</td></tr>
+            <tr><td>Rotate the holder key</td><td>a funded commit and settle, both broadcast</td></tr>
+            <tr><td>Register, sign in, keep alive</td><td>none: nothing is broadcast</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <section id="open">
+    <span class="eyebrow">Not done yet</span>
+    <h2>Open items</h2>
+    <ul class="plain read">
+      <li>An Identities list in the Hodos wallet panel, to see, unlink and rotate identities and withdraw "Keep me signed in".</li>
+      <li>Linking identities to each other, on or off chain.</li>
+      <li>Mainnet header rules. Both header chains follow regtest rules only.</li>
+      <li>An old holder key can still present after a rotation, because the check is that the anchor was seen, not that it is unspent. Every old holder key is the person's own, so this matters only if one leaks.</li>
+      <li>BSV Browser support is set aside for now.</li>
+    </ul>
+  </section>
+
+  <footer>
+    <p>Design and status: ChainBrowsers <code>docs/authbolt-registration.md</code>. Code: <code>packages/bolt</code> (identity, sidecar), Hodos branch <code>arcade-provider</code>, PeerLoop <code>p2p</code>.</p>
+    <p>Verified with the live test <code>tests/authbolt/peerloop.live.mjs</code>, which registers, signs in, keeps a session alive and signs in again in the real Hodos browser. Its negative control, with no verifier, fails at registration.</p>
+  </footer>
+</div>
+
+<script>
+(function () {
+  // Lanes: 1 page, 2 Hodos, 3 app server, 4 verifier & chain.
+  var LANES = [
+    ['c-page', 'Page', 'PeerLoop in Hodos'],
+    ['c-hodos', 'Hodos', 'shell · prompt · wallet'],
+    ['c-server', 'App server', 'p2pd'],
+    ['c-chain', 'Verifier & chain', 'bolt-verify · Arcade · headers']
+  ];
+  var C = ['', 'c-page', 'c-hodos', 'c-server', 'c-chain'];
+  var verify = [
+    [3, 4, 'POST /verify with the package, app key and auth data (shared secret)'],
+    [4, 4, 'Runs b017’s verifier on the commit and settle, off chain. Sends the anchor to Arcade, which answers “already seen”. A mined anchor is checked against p2pd’s header chain instead.'],
+    [4, 3, '<code>ok</code>, the issuer key, the purpose']
+  ];
+  var FLOWS = {
+    register: [
+      [1, 1, 'Finds <code>window.BOLT</code>. Without it the form stays disabled and says to open the site in Hodos.'],
+      [1, 3, 'POST /api/auth/challenge: purpose <code>register</code> and the form'],
+      [3, 3, 'Builds the statement, hashes it into the 66 bytes, keeps the challenge for 2 minutes'],
+      [3, 1, 'challenge id, app key, auth data'],
+      [1, 2, '<code>BOLT.requestPresentation({ appPubKey, data, purpose })</code>, sent as POST /bolt/request'],
+      [2, 2, 'Checks the app key and that the data names this app and purpose. Holds the page’s call and opens Hodos’s prompt.'],
+      [2, 2, 'The person picks this site’s identity, a new one, or another, and may tick “Keep me signed in”.'],
+      [2, 4, 'New identity only: mint under a fresh key, a 1-sat output, broadcast through Arcade', 'opt'],
+      [2, 2, 'The wallet signs a self-transfer: a commit carrying the 66 bytes and a settle back to the holder’s own key. Nothing is broadcast. The identity is linked to this site.'],
+      [2, 1, 'the package: commit and settle'],
+      [1, 3, 'POST /api/auth/register: challenge id and package']
+    ].concat(verify, [
+      [3, 3, 'Consumes the challenge. Records an account keyed by the issuer key, unless another account has it.'],
+      [3, 1, '202: approved, or pending until an admin approves']
+    ]),
+    signin: [
+      [1, 3, 'POST /api/auth/challenge: purpose <code>signin</code>'],
+      [3, 1, 'challenge id, app key, auth data'],
+      [1, 2, '<code>BOLT.requestPresentation({ …, purpose: ’signin’ })</code>'],
+      [2, 2, 'The prompt offers the identity already linked to this site first. The person approves.'],
+      [2, 1, 'the package'],
+      [1, 3, 'POST /api/auth/signin: challenge id and package']
+    ].concat(verify, [
+      [3, 3, 'Finds the account by issuer key. A rotated holder key does not matter.'],
+      [3, 1, '200 and a session cookie for 30 minutes']
+    ]),
+    refresh: [
+      [1, 1, 'Every 10 minutes while signed in'],
+      [1, 3, 'POST /api/auth/challenge: purpose <code>refresh</code>, tied to this session'],
+      [3, 1, 'challenge id, app key, auth data with tag 0x03'],
+      [1, 2, '<code>BOLT.requestPresentation({ …, silent: true })</code>'],
+      [2, 2, 'Shows nothing. Hands the request to the hidden, preloaded prompt overlay, with a 20-second limit.'],
+      [2, 2, 'Presents only keep-alive data, for this app, on a site where the person chose “Keep me signed in”. Otherwise answers <code>NEEDS_PROMPT</code>.'],
+      [2, 1, 'the package'],
+      [1, 3, 'POST /api/auth/refresh: challenge id and package']
+    ].concat(verify, [
+      [3, 3, 'Checks the challenge came from this session and the issuer key is this account’s'],
+      [3, 1, 'a renewed cookie: 30 more minutes']
+    ])
+  };
+
+  function head() {
+    var h = '<div class="lanes-head"><div></div><div class="lanes">';
+    LANES.forEach(function (l) { h += '<div class="' + l[0] + '">' + l[1] + '<span>' + l[2] + '</span></div>'; });
+    return h + '</div></div>';
+  }
+  function row(step, i) {
+    var a = step[0], b = step[1], text = step[2], opt = step[3] === 'opt';
+    var cell;
+    if (a === b) {
+      cell = '<div class="act ' + C[a] + '" style="grid-column:' + a + '/' + (a + 1) + '">' + text + '</div>';
+    } else {
+      var lo = Math.min(a, b), hi = Math.max(a, b);
+      cell = '<div class="msg ' + C[a] + (a < b ? ' ltr' : ' rtl') + (opt ? ' opt' : '') + '" style="grid-column:' + lo + '/' + (hi + 1) + ';--n:' + (hi - lo + 1) + '">' + text + '</div>';
+    }
+    return '<div class="row"><div class="num">' + (i + 1) + '</div><div class="lanes">' + cell + '</div></div>';
+  }
+  document.querySelectorAll('.seq[data-flow]').forEach(function (el) {
+    el.innerHTML = head() + FLOWS[el.dataset.flow].map(row).join('');
+  });
+})();
+</script>

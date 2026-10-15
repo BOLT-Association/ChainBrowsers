@@ -1,0 +1,137 @@
+{
+  "source": "computed with Python (struct, hashlib), independently of the JS and Go implementations",
+  "rule": "[tag 1][app public key 33][challenge hash 32] + [count 4, big-endian, >= 1] for register (01), rotate (05) and reissue (06); signin (02), refresh (03) and write (04) carry no count (66 bytes)",
+  "tags": {
+    "register": 1,
+    "signin": 2,
+    "refresh": 3,
+    "write": 4,
+    "rotate": 5,
+    "reissue": 6
+  },
+  "cases": [
+    {
+      "purpose": "register",
+      "appPubKey": "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+      "challengeHash": "f3da6f7932ba4122fe85dd6cf265e0f329f7bff84499d834357d71c770b69457",
+      "hex": "010279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798f3da6f7932ba4122fe85dd6cf265e0f329f7bff84499d834357d71c770b6945700000001",
+      "bytes": 70,
+      "count": 1
+    },
+    {
+      "purpose": "register",
+      "appPubKey": "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+      "challengeHash": "f3da6f7932ba4122fe85dd6cf265e0f329f7bff84499d834357d71c770b69457",
+      "hex": "010279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798f3da6f7932ba4122fe85dd6cf265e0f329f7bff84499d834357d71c770b6945700000002",
+      "bytes": 70,
+      "count": 2
+    },
+    {
+      "purpose": "register",
+      "appPubKey": "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+      "challengeHash": "f3da6f7932ba4122fe85dd6cf265e0f329f7bff84499d834357d71c770b69457",
+      "hex": "010279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798f3da6f7932ba4122fe85dd6cf265e0f329f7bff84499d834357d71c770b69457ffffffff",
+      "bytes": 70,
+      "count": 4294967295
+    },
+    {
+      "purpose": "signin",
+      "appPubKey": "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+      "challengeHash": "f41ad6b4155e7dceb49f4952d9fb933c7fa73c65ed2fd6b27cd2367dc9aacc95",
+      "hex": "020279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798f41ad6b4155e7dceb49f4952d9fb933c7fa73c65ed2fd6b27cd2367dc9aacc95",
+      "bytes": 66
+    },
+    {
+      "purpose": "refresh",
+      "appPubKey": "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+      "challengeHash": "f6bbba31fa555c4810aeca3c71dd1853b79d8d6f5f1cd7d2d67add2aab5d585b",
+      "hex": "030279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798f6bbba31fa555c4810aeca3c71dd1853b79d8d6f5f1cd7d2d67add2aab5d585b",
+      "bytes": 66
+    },
+    {
+      "purpose": "write",
+      "appPubKey": "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+      "challengeHash": "f365555608f4c6c1ae1281a610f52559a7dc0af6f171761936a8c7897e3fad78",
+      "hex": "040279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798f365555608f4c6c1ae1281a610f52559a7dc0af6f171761936a8c7897e3fad78",
+      "bytes": 66
+    },
+    {
+      "purpose": "rotate",
+      "appPubKey": "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+      "challengeHash": "cc67a8fa0eead4c5d67abd06a42b28f9e1a959a44cfb69fcb3412b4ec26e8ecb",
+      "hex": "050279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798cc67a8fa0eead4c5d67abd06a42b28f9e1a959a44cfb69fcb3412b4ec26e8ecb00000001",
+      "bytes": 70,
+      "count": 1
+    },
+    {
+      "purpose": "rotate",
+      "appPubKey": "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+      "challengeHash": "cc67a8fa0eead4c5d67abd06a42b28f9e1a959a44cfb69fcb3412b4ec26e8ecb",
+      "hex": "050279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798cc67a8fa0eead4c5d67abd06a42b28f9e1a959a44cfb69fcb3412b4ec26e8ecb00000002",
+      "bytes": 70,
+      "count": 2
+    },
+    {
+      "purpose": "rotate",
+      "appPubKey": "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+      "challengeHash": "cc67a8fa0eead4c5d67abd06a42b28f9e1a959a44cfb69fcb3412b4ec26e8ecb",
+      "hex": "050279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798cc67a8fa0eead4c5d67abd06a42b28f9e1a959a44cfb69fcb3412b4ec26e8ecbffffffff",
+      "bytes": 70,
+      "count": 4294967295
+    },
+    {
+      "purpose": "reissue",
+      "appPubKey": "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+      "challengeHash": "aac6e7e7ee2571f966e27763b42a0337ad49fbbe13eb7466cae4212b4a7a09fb",
+      "hex": "060279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798aac6e7e7ee2571f966e27763b42a0337ad49fbbe13eb7466cae4212b4a7a09fb00000001",
+      "bytes": 70,
+      "count": 1
+    },
+    {
+      "purpose": "reissue",
+      "appPubKey": "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+      "challengeHash": "aac6e7e7ee2571f966e27763b42a0337ad49fbbe13eb7466cae4212b4a7a09fb",
+      "hex": "060279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798aac6e7e7ee2571f966e27763b42a0337ad49fbbe13eb7466cae4212b4a7a09fb00000002",
+      "bytes": 70,
+      "count": 2
+    },
+    {
+      "purpose": "reissue",
+      "appPubKey": "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+      "challengeHash": "aac6e7e7ee2571f966e27763b42a0337ad49fbbe13eb7466cae4212b4a7a09fb",
+      "hex": "060279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798aac6e7e7ee2571f966e27763b42a0337ad49fbbe13eb7466cae4212b4a7a09fbffffffff",
+      "bytes": 70,
+      "count": 4294967295
+    }
+  ],
+  "invalid": [
+    {
+      "why": "register without its count (66 bytes)",
+      "hex": "010279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798f3da6f7932ba4122fe85dd6cf265e0f329f7bff84499d834357d71c770b69457"
+    },
+    {
+      "why": "register with a 5-byte count (71 bytes)",
+      "hex": "010279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798f3da6f7932ba4122fe85dd6cf265e0f329f7bff84499d834357d71c770b694570000000001"
+    },
+    {
+      "why": "register with count 0",
+      "hex": "010279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798f3da6f7932ba4122fe85dd6cf265e0f329f7bff84499d834357d71c770b6945700000000"
+    },
+    {
+      "why": "signin with a count (70 bytes)",
+      "hex": "020279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798f3da6f7932ba4122fe85dd6cf265e0f329f7bff84499d834357d71c770b6945700000001"
+    },
+    {
+      "why": "unknown tag 07",
+      "hex": "070279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798f3da6f7932ba4122fe85dd6cf265e0f329f7bff84499d834357d71c770b6945700000001"
+    },
+    {
+      "why": "app key that is not a compressed key",
+      "hex": "010479be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798f3da6f7932ba4122fe85dd6cf265e0f329f7bff84499d834357d71c770b6945700000001"
+    },
+    {
+      "why": "not hex",
+      "hex": "zz0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798f3da6f7932ba4122fe85dd6cf265e0f329f7bff84499d834357d71c770b6945700000001"
+    }
+  ]
+}

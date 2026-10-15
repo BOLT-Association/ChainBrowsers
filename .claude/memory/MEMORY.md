@@ -1,0 +1,11 @@
+- [ChainBrowsers status](chainbrowsers-status.md) — branches/pushes, what the Hodos spv mode does and what is verified, open items
+- [Working rules](working-rules-chainbrowsers.md) — running wallets safely, git/push rules, BSV-native preferences, how the user wants design answers
+- [Browser header audit](browser-header-audit.md) — SPV gaps in Hodos/bsv-browser and what WS4 has fixed
+- [Browsers only via Arcade](browsers-only-via-arcade.md) — no direct Teranode; Arcade offers no raw-tx/UTXO/outspend
+- [bsv-browser spv hardening](bsv-browser-spv.md) — PRs #1 (fork) and #2 (docs), what is built/verified/open, traps, the other session sharing the clone and stack
+- [E2E shows real browsers side by side](e2e-real-browsers-side-by-side.md) — cross-wallet test must show Hodos window + Android emulator, both spv on Arcade
+- [Test artifacts stay in the repo](test-artifacts-in-repo.md) — screenshots/logs go to a gitignored folder in the repo, not %TEMP%
+- [Cross-wallet e2e status](cross-wallet-e2e-status.md) — what passes, branches pushed, emulator/build setup on this machine, open items
+- [Lessons: UI e2e work](lessons-ui-e2e-work.md) — user-clicked modals, headless tests miss the app monitor, shared clone/stack, Windows traps
+- [b017 source](b017-source.md) — BOLT-Association/b017, branch auth-bolt-plus-zf; local copy in priv-chain/b017; read it in full for interface questions
+- [BOLT interface status](bolt-interface-status.md) — packages/bolt built and live-tested on Hodos; user decisions; browser wiring not done
